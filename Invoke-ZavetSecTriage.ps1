@@ -765,7 +765,8 @@ Write-OK "Autoruns=$($persistItems.Count) | Tasks=$($tasks.Count) | Services=$($
 # -------------------------------------------------------
 Write-Phase 'User Accounts & Sessions'
 
-$localUsers = Get-LocalUser -EA SilentlyContinue | ForEach-Object {
+# Get-LocalUser - safe, fast
+$localUsers = @(Get-LocalUser -EA SilentlyContinue | ForEach-Object {
     [PSCustomObject]@{
         Name             = $_.Name
         Enabled          = $_.Enabled
@@ -776,15 +777,20 @@ $localUsers = Get-LocalUser -EA SilentlyContinue | ForEach-Object {
         Description      = $_.Description
         SID              = $_.SID.Value
     }
-}
+})
 Save-Csv "$triageRoot\Users\local_users.csv" $localUsers
 
-$dollarAccts = Get-WmiObject Win32_UserAccount |
-    Where-Object { $_.Name -match '\$' -and $_.LocalAccount -eq $true }
-if ($dollarAccts) {
-    $names = ($dollarAccts | Select-Object -ExpandProperty Name) -join ', '
-    Add-Highlight 'Users' 'HIGH' "Dollar-sign local accounts: $names" "May be backdoor accounts" 'T1136.001'
-}
+# Win32_UserAccount - can hang on domain-joined systems, use timeout
+try {
+    $wuJob  = Start-Job { Get-WmiObject Win32_UserAccount -EA SilentlyContinue |
+                          Where-Object { $_.Name -match '\$' -and $_.LocalAccount -eq $true } }
+    $dollarAccts = $wuJob | Wait-Job -Timeout 10 | Receive-Job
+    Remove-Job $wuJob -Force -EA SilentlyContinue
+    if ($dollarAccts) {
+        $names = ($dollarAccts | Select-Object -ExpandProperty Name) -join ', '
+        Add-Highlight 'Users' 'HIGH' "Dollar-sign local accounts: $names" "May be backdoor accounts" 'T1136.001'
+    }
+} catch {}
 
 $recentEnabled = $localUsers | Where-Object {
     $_.Enabled -eq $true -and $_.PasswordLastSet -ne $null -and
@@ -794,23 +800,47 @@ foreach ($u in $recentEnabled) {
     Add-Highlight 'Users' 'MEDIUM' "Account with recent password change: $($u.Name)" "PasswordLastSet=$($u.PasswordLastSet)" 'T1136.001'
 }
 
-$localGroups = Get-LocalGroup -EA SilentlyContinue | ForEach-Object {
-    $g       = $_
-    $members = try {
-        (Get-LocalGroupMember -Group $g.Name -EA Stop | Select-Object -ExpandProperty Name) -join ', '
-    } catch { '' }
-    [PSCustomObject]@{ Group=$g.Name; Description=$g.Description; Members=$members }
-}
-Save-Csv "$triageRoot\Users\local_groups.csv" $localGroups
-Save-Text "$triageRoot\Users\logon_sessions.txt" ((& query user 2>$null) -join "`n")
-
-$klistOut = & klist 2>$null
-Save-Text "$triageRoot\Users\kerberos_tickets.txt" ($klistOut -join "`n")
-if ($klistOut) {
-    $klistStr = $klistOut -join ' '
-    if ($klistStr -match '(10 years|3650 days|golden|20[3-9][0-9])') {
-        Add-Highlight 'Users' 'CRITICAL' "Possible Golden/Silver Ticket in Kerberos cache" "klist output contains suspicious validity period" 'T1558.001'
+# Get-LocalGroup + Get-LocalGroupMember - wrap entire block in job with timeout
+try {
+    $lgJob = Start-Job {
+        Get-LocalGroup -EA SilentlyContinue | ForEach-Object {
+            $g = $_
+            $members = try {
+                (Get-LocalGroupMember -Group $g.Name -EA Stop |
+                 Select-Object -ExpandProperty Name) -join ', '
+            } catch { '' }
+            [PSCustomObject]@{ Group=$g.Name; Description=$g.Description; Members=$members }
+        }
     }
+    $localGroups = $lgJob | Wait-Job -Timeout 15 | Receive-Job
+    Remove-Job $lgJob -Force -EA SilentlyContinue
+} catch { $localGroups = $null }
+Save-Csv "$triageRoot\Users\local_groups.csv" $localGroups
+
+# query user - timeout 8 sec
+try {
+    $quJob = Start-Job { & query user 2>$null }
+    $quOut = $quJob | Wait-Job -Timeout 8 | Receive-Job
+    Remove-Job $quJob -Force -EA SilentlyContinue
+    Save-Text "$triageRoot\Users\logon_sessions.txt" ($quOut -join "`n")
+} catch {
+    Save-Text "$triageRoot\Users\logon_sessions.txt" "query user: timeout or not available"
+}
+
+# klist - timeout 8 sec
+try {
+    $klJob = Start-Job { & klist 2>$null }
+    $klistOut = $klJob | Wait-Job -Timeout 8 | Receive-Job
+    Remove-Job $klJob -Force -EA SilentlyContinue
+    Save-Text "$triageRoot\Users\kerberos_tickets.txt" ($klistOut -join "`n")
+    if ($klistOut) {
+        $klistStr = $klistOut -join ' '
+        if ($klistStr -match '(10 years|3650 days|golden|20[3-9][0-9])') {
+            Add-Highlight 'Users' 'CRITICAL' "Possible Golden/Silver Ticket in Kerberos cache" "klist output contains suspicious validity period" 'T1558.001'
+        }
+    }
+} catch {
+    Save-Text "$triageRoot\Users\kerberos_tickets.txt" "klist: timeout or not available"
 }
 
 Write-OK "Users=$($localUsers.Count) | Groups=$($localGroups.Count)"

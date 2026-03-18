@@ -1,0 +1,728 @@
+ZavetSec Triage v1.0 — Capability Reference
+============================================
+Detailed description of collected artifacts and their forensic value.
+
+
+════════════════════════════════════════════════════════════════
+  ENGLISH
+════════════════════════════════════════════════════════════════
+
+[01] SYSTEM BASELINE
+Files: System\sysinfo.json, System\hotfixes_last20.csv,
+       System\installed_software.csv
+
+What is collected:
+  OS name, version, build number, architecture, domain membership,
+  last boot time, install date, uptime, RAM, CPU count, time zone,
+  PowerShell version. Last 20 installed hotfixes. Full list of
+  installed software with publisher and install date.
+
+Forensic value:
+  - Last boot time reveals reboots after compromise or lateral movement
+  - Uptime anomalies (very short = recent reboot after cleanup)
+  - Missing critical patches indicate exploitable attack surface
+  - Installed software flags RATs: AnyDesk, TeamViewer, ngrok,
+    Cloudflared, RustDesk, ScreenConnect, Ammyy, Radmin and others
+    are auto-flagged as MEDIUM findings
+  - Domain membership is baseline for privilege and lateral movement analysis
+  - Install date vs compromise date helps timeline reconstruction
+
+
+[02] RUNNING PROCESSES
+Files: Processes\processes.csv
+
+What is collected:
+  All running processes: PID, parent PID, process name, full path,
+  command line, start time, SHA256 hash, Authenticode signature status,
+  username, session ID. Masquerade detection (process name matches
+  known system binary but runs from wrong path). Parent chain analysis.
+
+Forensic value:
+  - Unsigned or invalid-signature processes in system paths = strong IOC
+  - Processes running from Temp, AppData, ProgramData = suspicious
+  - Command line captures encoded PowerShell, download cradles, LOLBins
+  - Parent chain: cmd.exe spawned by Word = document-based execution
+  - Masquerade detection: svchost.exe not in System32 = likely malware
+  - SHA256 enables VirusTotal lookup without running the binary
+  - Suspicious=True column pre-filters high-priority items
+
+
+[03] NETWORK STATE
+Files: Network\tcp_connections.csv, Network\udp_endpoints.csv,
+       Network\dns_cache.csv, Network\arp_table.txt,
+       Network\named_pipes.csv
+
+What is collected:
+  All TCP/UDP connections with local/remote address, port, state,
+  owning PID and process name. Full DNS resolver cache. ARP table
+  (IP-to-MAC mapping). All named pipes with owner process.
+
+Forensic value:
+  - ESTABLISHED connections to external IPs = active C2 candidates
+  - IsExternal=True column pre-filters non-RFC1918 destinations
+  - LISTENING on unusual ports = backdoor or RAT
+  - DNS cache reveals domains resolved even if connection is gone —
+    catches C2 domains not visible in active connections
+  - ARP table reconstructs which hosts were recently contacted on LAN,
+    useful for lateral movement detection
+  - Named pipes: known C2 framework signatures (Cobalt Strike, Meterpreter,
+    MSF post-ex) are auto-flagged — msagent_, postex_, MSSE-* patterns
+
+
+[04] PERSISTENCE
+Files: Persistence\autoruns.csv, Persistence\scheduled_tasks.csv,
+       Persistence\services.csv, Persistence\wmi_subscriptions.json
+
+Note: autoruns.csv is a single consolidated file containing all
+autorun sources — Run/RunOnce keys, Winlogon, IFEO, LSA SSP,
+BootExecute, COM hijacks, Startup folders. Each row has a Source
+field identifying the type.
+
+What is collected:
+  Registry Run/RunOnce keys (HKLM + HKCU, all users). Winlogon
+  Userinit and Shell values. Image File Execution Options debugger
+  hijacks. LSA Security Support Providers. All scheduled tasks with
+  command, trigger, author, last run time. All services with binary
+  path, start type, state. WMI event subscriptions (consumer + filter).
+
+Forensic value:
+  - Run keys are the most abused persistence mechanism — any unknown
+    entry with a path in Temp or AppData is high-priority
+  - IFEO debugger hijack enables execution on any binary launch —
+    classic for accessibility feature (sethc.exe, osk.exe) backdoors
+  - Winlogon Shell replacement persists across all logins
+  - LSA SSP is loaded into lsass — malicious SSP = credential harvester
+  - Scheduled tasks: attacker-created tasks often have no description,
+    run from unusual paths, or use encoded commands
+  - Services with binpath in writable directories = likely planted
+  - WMI subscriptions are fileless — survive reboots, invisible to
+    most AV, detected only through WMI query (this module does that)
+
+
+[05] USER ACCOUNTS
+Files: Users\local_users.csv, Users\local_groups.csv,
+       Users\logon_sessions.txt, Users\kerberos_tickets.txt
+
+What is collected:
+  All local user accounts with SID, enabled status, last logon,
+  password last set, group membership. All local groups with members.
+  Active logon sessions (type, logon time, source). Kerberos tickets
+  (service, expiry, renewal limit).
+
+Forensic value:
+  - Hidden or recently created accounts = backdoor access
+  - Disabled accounts that are still members of Administrators = sleeper
+  - Password last set on built-in accounts (Administrator, Guest)
+    reveals credential changes after compromise
+  - Logon session types: 3=network, 10=remote interactive (RDP),
+    2=interactive — unusual type for account reveals access method
+  - Kerberos tickets with unusual service names or abnormal expiry
+    can indicate pass-the-ticket or golden ticket attack (T1558)
+
+
+[06] POWERSHELL ARTIFACTS
+Files: Users\ps_history_<username>.txt (one per user)
+
+What is collected:
+  PowerShell command history from ConsoleHost_history.txt for every
+  user profile found on the system. Current PowerShell language mode.
+
+Forensic value:
+  - History survives session termination and captures exact commands run
+  - Download cradles: IEX, Invoke-WebRequest, DownloadString
+  - Encoded commands: -EncodedCommand blobs decoded in context
+  - Lateral movement: Enter-PSSession, Invoke-Command with -ComputerName
+  - Credential usage: net use with passwords in plaintext
+  - Constrained Language Mode being active can indicate hardened system
+    or, conversely, that attacker bypassed it
+
+
+[07] EVENT LOGS
+Files: Logs\evtlog_<logname>.csv (targeted IDs),
+       Logs\*.evtx (raw, all winevt logs)
+
+What is collected:
+  Targeted Event IDs exported as CSV: 4624/4625/4648/4672/4768/4769
+  (authentication), 4688 (process creation), 7045/7036 (services),
+  4698/4702 (scheduled tasks), 1102 (log clear), 4719 (audit policy),
+  4103/4104 (PowerShell script block). Raw EVTX copies of all logs.
+
+Forensic value:
+  - 4624/4625: successful and failed logons — brute force, spray
+  - 4648: explicit credential use — pass-the-hash indicators
+  - 4672: special privilege logon — tracks admin-level access
+  - 4688: process creation (requires audit policy) — full execution chain
+  - 7045: new service installed — common malware/tool deployment method
+  - 1102: security log cleared — major anti-forensics indicator
+  - 4719: audit policy changed — attacker disabling logging
+  - 4104: PowerShell script block logging — captures obfuscated scripts
+    after deobfuscation, invaluable for PowerShell-based attacks
+  - Raw EVTX files enable Chainsaw/Hayabusa Sigma rule scanning:
+    chainsaw hunt Logs\ --sigma rules\ --mapping mapping.yml
+
+
+[08] PREFETCH
+Files: Forensics\prefetch.csv
+
+What is collected:
+  All .pf files from C:\Windows\Prefetch: executable name, run count,
+  last run times (up to 8 timestamps on Win8+), referenced file paths.
+  30+ known attacker tool names are checked automatically.
+
+Forensic value:
+  - Prefetch proves execution — even if binary is deleted, .pf file remains
+  - Run count and timestamps reconstruct attack timeline precisely
+  - Referenced paths show what files the tool accessed during execution
+  - Auto-flagged tools: Mimikatz, ProcDump, PSExec, CrackMapExec,
+    Cobalt Strike, Meterpreter, Rubeus, BloodHound, LaZagne, Nmap,
+    Netcat, Chisel, Ligolo, Rclone, AnyDesk, WinSCP and 15+ more
+  - KnownAttacker=True column isolates confirmed tool executions instantly
+
+
+[09] FILE ACTIVITY (LNK)
+File: Forensics\lnk_recent.csv
+
+What is collected:
+  All .lnk files from Recent folders of all user profiles. Parsed
+  using pure .NET binary parser (no COM, no Shell.Application).
+  Target path extracted from LNK binary structure.
+
+Forensic value:
+  - LNK files record recently opened files and their original paths
+  - Target path may point to network shares, USB drives, or deleted files
+  - Timestamps on LNK files differ from target file timestamps —
+    useful for timeline discrepancy detection
+  - Can reveal access to sensitive files (credentials, configs, databases)
+    even if the files themselves have been deleted or are on a remote share
+
+
+[10] REGISTRY FORENSICS
+Files: Registry\userassist.csv, Registry\muicache.csv,
+       Registry\typedurls.csv, Registry\recentdocs.csv
+
+Note: Each file is created only if data exists for that category.
+
+What is collected:
+  UserAssist entries (ROT13 decoded) with run count and last execution
+  time. MUICache entries (all executed programs that registered a display
+  name). TypedURLs from Internet Explorer/Edge.
+
+Forensic value:
+  - UserAssist proves GUI program execution with timestamps —
+    complements Prefetch for full execution picture
+  - ROT13 decoding is done automatically — raw registry shows obfuscated
+    paths, this module shows real paths
+  - MUICache catches program executions that Prefetch may miss (network
+    drives, programs run once without prefetch generation)
+  - TypedURLs show manually entered URLs in browser address bar —
+    reveals C2 domains or exfiltration sites visited manually
+
+
+[11] CREDENTIAL SECURITY
+File: Forensics\credential_security.json
+
+What is collected:
+  WDigest authentication status (UseLogonCredential registry value).
+  Credential Guard status and configuration. LSA Protected Process
+  Light (PPL) status.
+
+Forensic value:
+  - WDigest enabled = plaintext credentials cached in LSASS memory —
+    direct indicator that attacker may have enabled it to harvest creds
+    (T1003.001), or that system is misconfigured / old policy
+  - Credential Guard disabled on modern systems is a gap — credentials
+    are not isolated in VSM, LSASS is directly dumpable
+  - LSA PPL disabled = LSASS can be accessed by non-protected processes —
+    tools like Mimikatz can dump it without a kernel driver
+
+
+[12] CONFIGURATION
+Files: Config\hosts_file.txt, Config\firewall_rules_inbound.csv,
+       Config\firewall_rules_outbound.csv, Config\ads_scan.csv
+
+Note: ads_scan.csv is created only if alternate data streams are found.
+
+What is collected:
+  Full hosts file content. All Windows Firewall rules (inbound and
+  outbound) with action, protocol, ports, program path. ADS (Alternate
+  Data Streams) scan of common attacker staging directories.
+
+Forensic value:
+  - Hosts file: entries overriding security tool domains (AV updates,
+    SIEM, EDR telemetry) = defense evasion, or redirecting to attacker
+    infrastructure
+  - Firewall rules: attacker-added rules allowing inbound connections
+    are a strong backdoor/RAT indicator
+  - Disabled outbound rules that should be active = policy tampering
+  - ADS scan: data hidden in alternate streams in Temp, AppData,
+    ProgramData — classic fileless malware staging technique (T1564.004)
+
+
+[13] SHADOW COPIES
+Files: Forensics\shadow_copies.csv (or absence noted in highlights)
+
+What is collected:
+  All VSS shadow copies via Win32_ShadowCopy WMI class: ID, creation
+  time, volume, state, originating machine.
+
+Forensic value:
+  - Absence of shadow copies on a system that normally has them =
+    strong ransomware indicator, auto-flagged as CRITICAL (T1490)
+  - Existing shadows can be mounted to recover deleted files or access
+    previous versions of modified artifacts
+  - Creation timestamps of shadows help establish when the system was
+    last in a known-good state before compromise
+
+
+[14] BROWSER HISTORY
+Files: Forensics\browser_history_all.csv,
+       Forensics\RawDB\<browser>_<profile>_<dbfile>
+
+What is collected:
+  History from 16 browsers: Chrome, Edge, Firefox, Opera, Brave,
+  Vivaldi, Yandex, Tor Browser, Chromium, IE, and others. All user
+  profiles. URLs, titles, visit counts, timestamps. Raw SQLite DB
+  files copied for offline parsing.
+
+Forensic value:
+  - Attacker browser activity: C2 panel access, exfiltration via web
+    upload, pastebin/github access for payload staging
+  - Credential theft research: visited phishing pages, password reset
+    pages, credential dump sites
+  - Data exfiltration: WeTransfer, Mega, Google Drive upload pages
+  - Raw DB copies allow recovery of deleted history records using
+    SQLite forensics tools (DB Browser, Autopsy, SQLite Forensic Explorer)
+
+
+[15] BITS JOBS
+File: Forensics\bits_jobs.csv
+
+Note: File is created only if BITS jobs exist on the system.
+      Absence of this file = no BITS jobs found (normal on clean systems).
+
+What is collected:
+  All Background Intelligent Transfer Service jobs for all users:
+  job name, state, owner, creation/modification time, source URL,
+  destination path.
+
+Forensic value:
+  - BITS is a LOLBin (T1197) — used by attackers for stealthy downloads
+    that survive reboots and blend into Windows Update traffic
+  - Jobs downloading from non-Microsoft URLs to Temp/AppData = IOC,
+    auto-flagged as HIGH
+  - Completed jobs may still have records — reveals historical downloads
+    even if the downloaded file was already executed and deleted
+  - Owner field identifies which user account initiated the transfer
+
+
+[16] CLIPBOARD
+Files: Forensics\clipboard.txt
+
+What is collected:
+  Current text content of the clipboard at time of collection.
+  Pattern matching for: passwords, tokens, API keys, private keys,
+  SSH keys, AWS credentials, Authorization headers.
+
+Forensic value:
+  - Captures credentials mid-operation — attacker may have copied
+    a password, API token, or private key before you ran the triage
+  - Sensitive pattern detection auto-flags findings as HIGH (T1552)
+  - Volatile artifact — only available on live system, gone after reboot
+
+
+[17] METADATA & SUMMARY
+Files: triage_metadata.json, triage_manifest.csv,
+       Forensics\triage_highlights.csv,
+       Forensics\triage_highlights.json
+
+What is collected:
+  Complete collection metadata: hostname, times, duration, operator,
+  admin status, OS, risk level. File manifest with sizes. All
+  highlights (flagged findings) from all modules in one place.
+
+Forensic value:
+  - triage_highlights.csv is the analyst's starting point —
+    all IOCs from all 17 modules consolidated, sorted by severity
+  - Risk level (LOW/MEDIUM/HIGH/CRITICAL) gives immediate triage priority
+  - MITRE ATT&CK technique IDs attached to every finding
+  - Manifest enables integrity verification and completeness check
+  - Metadata documents chain of custody: who ran it, when, on what system
+
+
+════════════════════════════════════════════════════════════════
+  РУССКИЙ
+════════════════════════════════════════════════════════════════
+
+[01] СИСТЕМНЫЙ БАЗИС
+Файлы: System\sysinfo.json, System\hotfixes_last20.csv,
+       System\installed_software.csv
+
+Что собирается:
+  Имя ОС, версия, номер сборки, архитектура, членство в домене,
+  время последней загрузки, дата установки, аптайм, объём RAM,
+  количество CPU, часовой пояс, версия PowerShell. Последние 20
+  установленных обновлений. Полный список установленного ПО с
+  издателем и датой установки.
+
+Криминалистическая ценность:
+  - Время последней загрузки выявляет перезагрузки после компрометации
+    или бокового перемещения
+  - Аномалии аптайма (очень короткий = недавняя перезагрузка после
+    зачистки следов)
+  - Отсутствие критических патчей указывает на эксплуатируемую поверхность
+  - Установленное ПО: RAT-инструменты AnyDesk, TeamViewer, ngrok,
+    Cloudflared, RustDesk, ScreenConnect, Ammyy, Radmin и другие
+    автоматически помечаются как MEDIUM
+  - Членство в домене — базис для анализа привилегий и бокового перемещения
+  - Дата установки ОС vs дата компрометации помогает восстановить таймлайн
+
+
+[02] ЗАПУЩЕННЫЕ ПРОЦЕССЫ
+Файлы: Processes\processes.csv
+
+Что собирается:
+  Все запущенные процессы: PID, родительский PID, имя, полный путь,
+  командная строка, время запуска, SHA256-хеш, статус подписи
+  Authenticode, имя пользователя, ID сессии. Обнаружение маскировки
+  (имя процесса совпадает с системным, но запущен из нестандартного
+  пути). Анализ цепочки родителей.
+
+Криминалистическая ценность:
+  - Неподписанные или с недействительной подписью процессы в системных
+    путях — сильный IOC
+  - Процессы из Temp, AppData, ProgramData — подозрительно
+  - Командная строка фиксирует закодированные PowerShell, download cradle,
+    LOLBin-злоупотребления
+  - Цепочка родителей: cmd.exe порождён Word = выполнение через документ
+  - Обнаружение маскировки: svchost.exe не из System32 = вероятно, малварь
+  - SHA256 позволяет проверить бинарь в VirusTotal без его запуска
+  - Колонка Suspicious=True предфильтрует приоритетные элементы
+
+
+[03] СЕТЕВОЕ СОСТОЯНИЕ
+Файлы: Network\tcp_connections.csv, Network\udp_endpoints.csv,
+       Network\dns_cache.csv, Network\arp_table.txt,
+       Network\named_pipes.csv
+
+Что собирается:
+  Все TCP/UDP-соединения с локальным/удалённым адресом, портом,
+  состоянием, PID и именем процесса-владельца. Полный кеш DNS-резолвера.
+  ARP-таблица (соответствие IP↔MAC). Все именованные каналы с
+  процессом-владельцем.
+
+Криминалистическая ценность:
+  - ESTABLISHED-соединения с внешними IP = кандидаты на активный C2
+  - Колонка IsExternal=True предфильтрует адреса вне RFC1918
+  - LISTENING на нестандартных портах = бэкдор или RAT
+  - Кеш DNS раскрывает домены, резолвившиеся даже после разрыва
+    соединения — выявляет C2-домены, невидимые в активных коннектах
+  - ARP-таблица восстанавливает список хостов, к которым недавно
+    обращались в локальной сети — полезно для обнаружения бокового
+    перемещения
+  - Именованные каналы: известные сигнатуры C2-фреймворков (Cobalt
+    Strike, Meterpreter, MSF post-ex) автоматически помечаются —
+    паттерны msagent_, postex_, MSSE-*
+
+
+[04] ЗАКРЕПЛЕНИЕ (PERSISTENCE)
+Файлы: Persistence\autoruns.csv, Persistence\scheduled_tasks.csv,
+       Persistence\services.csv, Persistence\wmi_subscriptions.json
+
+Примечание: autoruns.csv — единый сводный файл, содержащий все
+механизмы автозапуска: Run/RunOnce ключи, Winlogon, IFEO, LSA SSP,
+BootExecute, COM-перехваты, папки автозагрузки. В каждой строке
+поле Source указывает тип механизма.
+
+Что собирается:
+  Ключи реестра Run/RunOnce (HKLM + HKCU, все пользователи). Значения
+  Winlogon Userinit и Shell. Перехваты IFEO (Image File Execution
+  Options). LSA Security Support Providers. Все задачи планировщика с
+  командой, триггером, автором, временем последнего запуска. Все службы
+  с путём к бинарю, типом запуска, состоянием. WMI event subscriptions.
+
+Криминалистическая ценность:
+  - Ключи Run — самый эксплуатируемый механизм закрепления; любой
+    неизвестный элемент с путём в Temp или AppData — высокий приоритет
+  - Перехват IFEO debugger позволяет выполнить код при запуске любого
+    бинаря — классика для бэкдоров через специальные возможности
+    (sethc.exe, osk.exe)
+  - Замена Winlogon Shell сохраняется при всех входах в систему
+  - LSA SSP загружается в lsass — вредоносный SSP = перехватчик учётных
+    данных
+  - Задачи планировщика: созданные атакующим часто не имеют описания,
+    запускаются из нестандартных путей или используют закодированные
+    команды
+  - Службы с binpath в записываемых директориях = вероятно, подброшены
+  - WMI-подписки — бесфайловые, переживают перезагрузки, невидимы для
+    большинства AV, обнаруживаются только WMI-запросом (этот модуль
+    именно так и делает)
+
+
+[05] УЧЁТНЫЕ ЗАПИСИ
+Файлы: Users\local_users.csv, Users\local_groups.csv,
+       Users\logon_sessions.txt, Users\kerberos_tickets.txt
+
+Что собирается:
+  Все локальные учётные записи с SID, статусом, последним входом,
+  датой смены пароля, членством в группах. Все локальные группы
+  с участниками. Активные сессии входа (тип, время, источник).
+  Kerberos-билеты (служба, срок действия).
+
+Криминалистическая ценность:
+  - Скрытые или недавно созданные учётные записи = бэкдорный доступ
+  - Отключённые аккаунты, остающиеся в группе Administrators = спящий
+    бэкдор
+  - Дата смены пароля на встроенных аккаунтах (Administrator, Guest)
+    указывает на смену учётных данных после компрометации
+  - Типы сессий: 3=сетевой, 10=удалённый интерактивный (RDP),
+    2=интерактивный — нетипичный тип для аккаунта раскрывает метод
+    доступа
+  - Kerberos-билеты с нестандартными именами служб или аномальным сроком
+    могут указывать на pass-the-ticket или golden ticket (T1558)
+
+
+[06] АРТЕФАКТЫ POWERSHELL
+Файлы: Users\ps_history_<username>.txt (отдельный для каждого)
+
+Что собирается:
+  История команд PowerShell из ConsoleHost_history.txt для каждого
+  профиля пользователя на системе. Текущий режим языка PowerShell.
+
+Криминалистическая ценность:
+  - История сохраняется после завершения сессии и фиксирует точные
+    команды
+  - Download cradle: IEX, Invoke-WebRequest, DownloadString
+  - Закодированные команды: блобы -EncodedCommand в контексте
+  - Боковое перемещение: Enter-PSSession, Invoke-Command -ComputerName
+  - Использование учётных данных: net use с паролем в открытом виде
+  - Constrained Language Mode может указывать на защищённую систему
+    или на то, что атакующий его обошёл
+
+
+[07] ЖУРНАЛЫ СОБЫТИЙ
+Файлы: Logs\evtlog_<имя_журнала>.csv (целевые ID),
+       Logs\*.evtx (сырые копии всех winevt-журналов)
+
+Что собирается:
+  Целевые Event ID в CSV: 4624/4625/4648/4672/4768/4769
+  (аутентификация), 4688 (создание процесса), 7045/7036 (службы),
+  4698/4702 (задачи планировщика), 1102 (очистка журнала), 4719
+  (политика аудита), 4103/4104 (PowerShell script block). Сырые копии
+  всех EVTX.
+
+Криминалистическая ценность:
+  - 4624/4625: успешные и неудачные входы — брутфорс, спрей паролей
+  - 4648: использование явных учётных данных — индикаторы pass-the-hash
+  - 4672: вход с особыми привилегиями — отслеживает доступ уровня admin
+  - 4688: создание процесса (требует политики аудита) — полная цепочка
+  - 7045: установка новой службы — распространённый метод развёртывания
+  - 1102: очистка журнала безопасности — главный индикатор антикриминалистики
+  - 4719: изменение политики аудита — атакующий отключает логирование
+  - 4104: script block logging — захватывает обфусцированные скрипты
+    после деобфускации, бесценно для атак на базе PowerShell
+  - Сырые EVTX позволяют применять Sigma-правила через Chainsaw/Hayabusa
+
+
+[08] PREFETCH
+Файлы: Forensics\prefetch.csv
+
+Что собирается:
+  Все .pf файлы из C:\Windows\Prefetch: имя исполняемого файла,
+  счётчик запусков, до 8 временных меток последних запусков (Win8+),
+  пути к файлам, к которым был обращён процесс. Автоматическая проверка
+  30+ известных инструментов атакующих.
+
+Криминалистическая ценность:
+  - Prefetch доказывает факт выполнения — даже если бинарь удалён,
+    .pf-файл остаётся
+  - Счётчик и временные метки точно восстанавливают таймлайн атаки
+  - Пути к файлам показывают, к чему обращался инструмент при запуске
+  - Автоматически помечаемые инструменты: Mimikatz, ProcDump, PSExec,
+    CrackMapExec, Cobalt Strike, Meterpreter, Rubeus, BloodHound,
+    LaZagne, Nmap, Netcat, Chisel, Ligolo, Rclone, AnyDesk, WinSCP
+    и 15+ других
+  - Колонка KnownAttacker=True мгновенно изолирует подтверждённые
+    запуски инструментов
+
+
+[09] ФАЙЛОВАЯ АКТИВНОСТЬ (LNK)
+Файл: Forensics\lnk_recent.csv
+
+Что собирается:
+  Все .lnk-файлы из папок Recent всех профилей пользователей.
+  Парсинг через чистый .NET-парсер бинарного формата (без COM,
+  без Shell.Application). Целевой путь извлекается из структуры LNK.
+
+Криминалистическая ценность:
+  - LNK-файлы фиксируют недавно открытые файлы и их исходные пути
+  - Целевой путь может указывать на сетевые шары, USB-носители или
+    удалённые файлы
+  - Временные метки LNK отличаются от меток целевого файла — полезно
+    для выявления расхождений в таймлайне
+  - Может раскрыть доступ к чувствительным файлам (учётные данные,
+    конфиги, БД) даже если сами файлы удалены или находятся на
+    удалённом ресурсе
+
+
+[10] КРИМИНАЛИСТИКА РЕЕСТРА
+Файлы: Registry\userassist.csv, Registry\muicache.csv,
+       Registry\typedurls.csv, Registry\recentdocs.csv
+
+Примечание: каждый файл создаётся только если данные найдены.
+
+Что собирается:
+  Записи UserAssist (ROT13 декодирован) со счётчиком запусков и
+  временем последнего выполнения. Записи MUICache (все программы,
+  которые зарегистрировали отображаемое имя). TypedURLs из
+  Internet Explorer/Edge.
+
+Криминалистическая ценность:
+  - UserAssist доказывает запуск GUI-программ с временными метками —
+    дополняет Prefetch для полной картины выполнения
+  - ROT13 декодируется автоматически — сырой реестр показывает
+    обфусцированные пути, этот модуль — реальные
+  - MUICache фиксирует запуски программ, которые Prefetch может
+    пропустить (сетевые диски, однократные запуски)
+  - TypedURLs показывают URL, введённые вручную в адресную строку
+    браузера — раскрывает C2-домены или сайты эксфильтрации
+
+
+[11] БЕЗОПАСНОСТЬ УЧЁТНЫХ ДАННЫХ
+Файл: Forensics\credential_security.json
+
+Что собирается:
+  Статус WDigest (значение UseLogonCredential). Статус и конфигурация
+  Credential Guard. Статус LSA Protected Process Light (PPL).
+
+Криминалистическая ценность:
+  - WDigest включён = учётные данные в открытом виде кешируются в LSASS
+    — прямой индикатор того, что атакующий мог включить его для кражи
+    учёток (T1003.001) или системная мисконфигурация
+  - Credential Guard отключён на современных системах — уязвимость;
+    учётные данные не изолированы в VSM, LSASS напрямую дампируется
+  - LSA PPL отключён = к LSASS могут обращаться незащищённые процессы —
+    Mimikatz и аналоги могут дампировать без драйвера ядра
+
+
+[12] КОНФИГУРАЦИЯ
+Файлы: Config\hosts_file.txt, Config\firewall_rules_inbound.csv,
+       Config\firewall_rules_outbound.csv, Config\ads_scan.csv
+
+Примечание: ads_scan.csv создаётся только если найдены альтернативные потоки данных.
+
+Что собирается:
+  Полное содержимое hosts-файла. Все правила Windows Firewall
+  (входящие и исходящие) с действием, протоколом, портами, путём
+  к программе. Сканирование ADS (Alternate Data Streams) в типичных
+  директориях атакующих.
+
+Криминалистическая ценность:
+  - Hosts-файл: записи, переопределяющие домены инструментов защиты
+    (обновления AV, SIEM, телеметрия EDR) = обход защиты, или
+    перенаправление на инфраструктуру атакующего
+  - Правила фаервола: добавленные атакующим правила, разрешающие
+    входящие соединения = сильный индикатор бэкдора/RAT
+  - Отключённые исходящие правила = манипуляция политикой
+  - Сканирование ADS: данные, скрытые в альтернативных потоках в Temp,
+    AppData, ProgramData — классическая техника бесфайловой малвари
+    (T1564.004)
+
+
+[13] ТЕНЕВЫЕ КОПИИ
+Файлы: Forensics\shadow_copies.csv (или отметка в highlights об
+       их отсутствии)
+
+Что собирается:
+  Все теневые копии VSS через WMI-класс Win32_ShadowCopy: ID, время
+  создания, том, состояние, машина-источник.
+
+Криминалистическая ценность:
+  - Отсутствие теневых копий на системе, где они должны быть =
+    сильный индикатор шифровальщика, автоматически помечается как
+    CRITICAL (T1490)
+  - Существующие копии можно примонтировать для восстановления удалённых
+    файлов или доступа к предыдущим версиям изменённых артефактов
+  - Временные метки создания копий помогают установить, когда система
+    последний раз была в заведомо чистом состоянии до компрометации
+
+
+[14] ИСТОРИЯ БРАУЗЕРОВ
+Файлы: Forensics\browser_history_all.csv,
+       Forensics\RawDB\<браузер>_<профиль>_<файл_БД>
+
+Что собирается:
+  История из 16 браузеров: Chrome, Edge, Firefox, Opera, Brave,
+  Vivaldi, Yandex, Tor Browser, Chromium, IE и других. Все профили
+  всех пользователей. URL, заголовки, счётчики посещений, временные
+  метки. Сырые SQLite-базы скопированы для офлайн-разбора.
+
+Криминалистическая ценность:
+  - Активность атакующего в браузере: доступ к C2-панели, эксфильтрация
+    через веб-загрузку, обращение к pastebin/github для загрузки
+    полезных нагрузок
+  - Исследование кражи учётных данных: посещённые фишинговые страницы,
+    страницы сброса пароля, сайты с дампами
+  - Эксфильтрация данных: страницы загрузки WeTransfer, Mega, Google
+    Drive
+  - Сырые копии БД позволяют восстановить удалённые записи истории
+    инструментами SQLite-криминалистики (DB Browser, Autopsy,
+    SQLite Forensic Explorer)
+
+
+[15] ЗАДАНИЯ BITS
+Файл: Forensics\bits_jobs.csv
+
+Примечание: файл создаётся только если на системе есть BITS-задания.
+      Отсутствие файла = заданий не найдено (норма для чистых систем).
+
+Что собирается:
+  Все задания Background Intelligent Transfer Service для всех
+  пользователей: имя задания, состояние, владелец, время создания
+  и изменения, URL-источника, путь назначения.
+
+Криминалистическая ценность:
+  - BITS — LOLBin (T1197); используется атакующими для скрытых загрузок,
+    переживающих перезагрузки и маскирующихся под трафик Windows Update
+  - Задания, загружающие с не-Microsoft URL в Temp/AppData = IOC,
+    автоматически помечаются как HIGH
+  - Завершённые задания могут сохранять записи — раскрывает исторические
+    загрузки, даже если файл уже был запущен и удалён
+  - Поле Owner определяет, какая учётная запись инициировала передачу
+
+
+[16] БУФЕР ОБМЕНА
+Файлы: Forensics\clipboard.txt
+
+Что собирается:
+  Текущее текстовое содержимое буфера обмена на момент сбора.
+  Поиск паттернов: пароли, токены, API-ключи, приватные ключи,
+  SSH-ключи, AWS-учётные данные, заголовки Authorization.
+
+Криминалистическая ценность:
+  - Захватывает учётные данные в середине операции — атакующий мог
+    скопировать пароль, API-токен или приватный ключ до вашего запуска
+  - Обнаружение чувствительных паттернов автоматически помечает
+    находки как HIGH (T1552)
+  - Волатильный артефакт — доступен только на живой системе, исчезает
+    после перезагрузки
+
+
+[17] МЕТАДАННЫЕ И СВОДКА
+Файлы: triage_metadata.json, triage_manifest.csv,
+       Forensics\triage_highlights.csv,
+       Forensics\triage_highlights.json
+
+Что собирается:
+  Полные метаданные сбора: хостнейм, время, длительность, оператор,
+  статус админа, ОС, уровень риска. Манифест файлов с размерами.
+  Все срабатывания (highlights) из всех модулей в одном месте.
+
+Криминалистическая ценность:
+  - triage_highlights.csv — отправная точка аналитика: все IOC из всех
+    17 модулей сведены вместе, отсортированы по критичности
+  - Уровень риска (LOW/MEDIUM/HIGH/CRITICAL) даёт немедленный приоритет
+    триажа
+  - К каждой находке привязан ID техники MITRE ATT&CK
+  - Манифест позволяет проверить целостность и полноту сбора
+  - Метаданные документируют цепочку хранения: кто запустил, когда,
+    на какой системе

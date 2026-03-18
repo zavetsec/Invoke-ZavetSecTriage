@@ -92,23 +92,46 @@ For the best analysis experience, use **Timeline Explorer** by Eric Zimmerman (S
 instead of Excel — it was built specifically for DFIR CSV workflows.
 
 - Fast filtering and multi-column search across large files
-- Color-coded rows, column pinning, tag/bookmark rows during investigation
+- Color-coded rows, column pinning, bookmark rows during investigation
 - Handles large CSVs (100k+ rows) without freezing
 - Dark mode included
 
 Download: https://www.sans.org/tools/timeline-explorer/
 
-### Analyzing collected EVTX logs
-**Chainsaw** and **Hayabusa** allow batch Sigma rule scanning against the collected `Logs\` folder:
+---
+
+### Parsing collected EVTX logs with EvtxECmd
+ZavetSec Triage collects raw `.evtx` files into the `Logs\` folder.
+To convert them into structured CSV for analysis, use **EvtxECmd** — also by Eric Zimmerman.
+```
+# Parse all collected EVTX into a single CSV
+EvtxECmd.exe -d "Logs\" --csv "output\" --csvf events.csv --sync
+
+# Parse single file
+EvtxECmd.exe -f "Logs\Security.evtx" --csv "output\"
+```
+
+- Converts binary EVTX to normalized CSV with standardized field names
+- `--sync` downloads the latest event Maps automatically (400+ event ID definitions)
+- Output CSV opens directly in Timeline Explorer for unified analysis
+- Supports VSS — can parse shadow copy logs automatically
+
+Download: https://www.sans.org/tools/evtxecmd/
+GitHub: https://github.com/EricZimmerman/evtx
+
+---
+
+### Batch Sigma scanning
+For automated threat detection across collected logs:
 ```
 chainsaw hunt Logs\ --sigma rules\ --mapping mapping.yml
 hayabusa csv-timeline -d Logs\ -o timeline.csv
 ```
 
-The resulting timeline CSV can be opened directly in Timeline Explorer for unified analysis.
-
 - Chainsaw: https://github.com/WithSecureLabs/chainsaw
 - Hayabusa: https://github.com/Yamato-Security/hayabusa
+
+---
 
 ### Browser SQLite databases
 Raw `.db` files in `Forensics\Browser_<user>\` can be examined with

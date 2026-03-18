@@ -93,7 +93,7 @@ Script auto-flags findings with ATT&CK technique IDs. Coverage includes persiste
 
 ## License
 
-Personal and professional use. Do not use against systems you do not own or have explicit written authorization to assess.
+MIT — see [LICENSE](LICENSE)
 
 ---
 

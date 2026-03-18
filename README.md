@@ -85,9 +85,48 @@ hayabusa csv-timeline -d Logs\ -o timeline.csv
 
 ---
 
+## Recommendations
+
+### Viewing CSV output
+For the best analysis experience, use **Timeline Explorer** by Eric Zimmerman (SANS / ex-FBI)
+instead of Excel — it was built specifically for DFIR CSV workflows.
+
+- Fast filtering and multi-column search across large files
+- Color-coded rows, column pinning, tag/bookmark rows during investigation
+- Handles large CSVs (100k+ rows) without freezing
+- Dark mode included
+
+Download: https://www.sans.org/tools/timeline-explorer/
+
+### Analyzing collected EVTX logs
+**Chainsaw** and **Hayabusa** allow batch Sigma rule scanning against the collected `Logs\` folder:
+```
+chainsaw hunt Logs\ --sigma rules\ --mapping mapping.yml
+hayabusa csv-timeline -d Logs\ -o timeline.csv
+```
+
+The resulting timeline CSV can be opened directly in Timeline Explorer for unified analysis.
+
+- Chainsaw: https://github.com/WithSecureLabs/chainsaw
+- Hayabusa: https://github.com/Yamato-Security/hayabusa
+
+### Browser SQLite databases
+Raw `.db` files in `Forensics\Browser_<user>\` can be examined with
+**DB Browser for SQLite** — free, cross-platform, supports deleted record recovery.
+
+Download: https://sqlitebrowser.org
+
+---
+
 ## MITRE ATT&CK coverage
 
 Script auto-flags findings with ATT&CK technique IDs. Coverage includes persistence (T1053, T1547, T1546), credential access (T1552, T1003), defense evasion (T1197, T1490), discovery, and lateral movement indicators.
+
+---
+
+## Screenshot
+
+<img width="945" height="443" alt="image" src="https://github.com/user-attachments/assets/96235df3-3ee6-43f8-880e-80ba98b78b4e" />
 
 ---
 

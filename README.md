@@ -9,7 +9,7 @@
     EXPRESS TRIAGE v1.1  //  DFIR  //  PowerShell 5.1
 ```
 
-> Zero-dependency live forensics for Windows. One script. No installation. No external binaries. No internet. No traces.
+> Zero-dependency live forensics for Windows. One script. No installation. No external binaries. No internet. No persistent footprint.
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell)
 ![Platform](https://img.shields.io/badge/Platform-Windows%208.1%2B-informational?logo=windows)
@@ -20,7 +20,7 @@
 ---
 
 
-> **TL;DR** — Drop the script on a Windows host, run as Administrator, get a ZIP with 18 artifact categories and an HTML triage report in under 5 minutes. No setup. No internet. No dependencies.
+> **TL;DR** — Drop the script on a Windows host, run as Administrator, get a ZIP with 18 artifact categories and an HTML triage report in under 5 minutes. No setup. No internet. No dependencies. No persistent footprint.
 
 ---
 
@@ -37,6 +37,33 @@ Most triage solutions require installing agents, deploying binaries, configuring
 - Packages everything into a timestamped ZIP and exits cleanly
 
 **Design priorities:** speed over completeness, breadth over depth, zero friction over configurability. The goal is to get signal in under 5 minutes on an unknown host — not replace a full forensic acquisition.
+
+---
+
+
+## Design constraints
+
+Three principles guided every decision in the script:
+
+- **Deterministic output** — the same host collected twice in the same state produces the same CSV columns, the same folder structure, the same JSON keys. Parsing scripts and SIEM ingestion pipelines can rely on this.
+- **Minimal system impact** — read-only operations only. No registry writes, no service installation, no process injection, no network connections. Peak RAM under 150 MB. One temporary folder in `%TEMP%`, removed on completion.
+- **Analyst-first ergonomics** — every file is named for its content, every suspicious finding has a `Suspicious=True` flag and a MITRE technique ID, and the HTML report requires no tooling to open. The output should be readable by an analyst who has never seen the script before.
+
+---
+
+## Tested on
+
+| OS | Build | Notes |
+|----|-------|-------|
+| Windows 11 Pro | 22631 (23H2) | Domain-joined and standalone |
+| Windows 11 Pro | 22000 (21H2) | |
+| Windows 10 Pro | 19045 (22H2) | |
+| Windows 10 LTSC | 17763 (2019) | |
+| Windows Server 2022 | 20348 | Core and Desktop Experience |
+| Windows Server 2019 | 17763 | |
+| Windows Server 2016 | 14393 | |
+
+Modules that depend on features not present on older builds (e.g. `Get-LocalUser` on Server 2012 R2) degrade silently — the rest of collection continues.
 
 ---
 

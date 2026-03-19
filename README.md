@@ -35,6 +35,56 @@ Most triage solutions require installing agents, deploying binaries, configuring
 
 ---
 
+
+## When NOT to use this tool
+
+Being explicit about limitations is more useful than overpromising.
+
+- **Stealth or covert assessments** — the combination of WMI queries, named pipe enumeration, and registry reads across all user SIDs will trigger behavioral alerts in most EDR products. This is not a covert collection tool.
+- **Full forensic preservation** — the script does not acquire memory images, disk images, or forensically sound hive copies. Use WinPmem, FTK Imager, or Magnet RAM Capture for that.
+- **Memory-resident threats** — injected shellcode, reflective DLLs, and process hollowing without on-disk artifacts are not directly detected. Combine with a memory acquisition tool for deep process analysis.
+- **Large-scale fleet triage** — the script runs one host at a time. For simultaneous triage across hundreds of endpoints, use Velociraptor or EDR-native bulk collection.
+- **Legal chain of custody** — this is a first-pass triage tool, not a forensically sound acquisition. For court-admissible evidence, follow a proper acquisition methodology.
+
+---
+
+## Usage scenarios
+
+### Ransomware initial triage
+An endpoint is the suspected patient zero. You have RDP access and 10 minutes before the network cable gets pulled.
+
+```
+1. Forensics\shadow_copies.csv     -> empty = vssadmin already ran (T1490)
+2. Forensics\prefetch.csv          -> KnownThreat = True (Rclone? Cobalt Strike?)
+3. Network\tcp_connections.csv     -> IsExternal + Established (C2 still active?)
+4. Persistence\scheduled_tasks.csv -> dropper persistence before encryption?
+5. Logs\evtx_Security.csv          -> EID 4688 process creation timeline
+```
+
+### Suspicious user / insider threat
+An account shows anomalous access patterns. The machine is still online.
+
+```
+1. Users\kerberos_tickets.txt        -> unusual service names, abnormal validity
+2. Users\ps_history_<user>.txt       -> net use, copy, xcopy to network paths?
+3. Forensics\lnk_recent.csv          -> recently opened files, share paths
+4. Registry\userassist.csv           -> GUI execution history with timestamps
+5. Forensics\browser_history_all.csv -> cloud upload, webmail, exfil sites
+```
+
+### Unknown initial access
+An alert fired but the source is unclear. Host may or may not be compromised.
+
+```
+1. Forensics\triage_highlights.csv   -> sort CRITICAL->HIGH, read top 10
+2. Processes\processes.csv           -> unsigned binaries in Temp / AppData
+3. Persistence\autoruns.csv          -> entries outside known software vendors
+4. Network\named_pipes.csv           -> Suspicious = True (C2 framework pipe?)
+5. Logs\evtx_Security.csv            -> EID 4624/4625 unusual logon sources
+```
+
+---
+
 ## Compared to alternatives
 
 | | ZavetSec Triage | KAPE | Velociraptor | CyberTriage |
@@ -53,36 +103,60 @@ The tool fills the gap between "nothing installed" and "full IR infrastructure".
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Invoke-ZavetSecTriage.ps1               │
-│                                                          │
-│  ┌──────────────┐    ┌───────────────┐    ┌──────────┐  │
-│  │  Collection  │───▶│  Normalization│───▶│ Heuristic│  │
-│  │    Layer     │    │    & Parsing  │    │  Engine  │  │
-│  └──────────────┘    └───────────────┘    └────┬─────┘  │
-│   18 modules          CSV / JSON / TXT          │        │
-│   WMI · .NET API      ROT13 decode         Highlights    │
-│   Registry · EVTX     LNK binary parse     MITRE tags    │
-│   Named pipes                              Risk level     │
-│   Locked file VSS                               │        │
-│                                           ┌────▼─────┐  │
-│                                           │ Reporting │  │
-│                                           │  Layer    │  │
-│                                           └────┬─────┘  │
-│                                                │        │
-│                              ┌─────────────────┼──────┐ │
-│                              │                 │      │ │
-│                         triage_report.html   ZIP    CSV │
-│                         (interactive HTML)  archive data│
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph script["Invoke-ZavetSecTriage.ps1"]
+        direction TB
+        C["**Collection Layer**
+─────────────────
+18 modules
+WMI · .NET API
+Registry · EVTX
+Named pipes · VSS"]
+        N["**Normalization & Parsing**
+─────────────────────────
+CSV / JSON / TXT output
+ROT13 decode (UserAssist)
+LNK binary parse
+Locked file copy"]
+        H["**Heuristic Engine**
+─────────────────
+Path-based IOC checks
+Signature validation
+C2 pipe pattern match
+Known attacker tools
+Credential posture"]
+        R["**Reporting Layer**
+──────────────────
+triage_highlights.csv
+MITRE ATT&CK tags
+Risk level scoring"]
+
+        C --> N --> H --> R
+    end
+
+    R --> HTML["triage_report.html
+(interactive, browser)"]
+    R --> ZIP["hostname_timestamp.zip
+(full archive)"]
+    R --> META["triage_metadata.json
+(collection summary)"]
+
+    style script fill:#0d1117,stroke:#30363d,color:#c9d1d9
+    style C fill:#161b22,stroke:#21262d,color:#c9d1d9
+    style N fill:#161b22,stroke:#21262d,color:#c9d1d9
+    style H fill:#161b22,stroke:#1f6feb,color:#c9d1d9
+    style R fill:#161b22,stroke:#21262d,color:#c9d1d9
+    style HTML fill:#0d419d,stroke:#1f6feb,color:#ffffff
+    style ZIP fill:#1a3a1a,stroke:#3fb950,color:#ffffff
+    style META fill:#1a3a1a,stroke:#3fb950,color:#ffffff
 ```
 
-**Collection layer** reads from live system memory only — WMI, .NET APIs, registry, and filesystem reads. No process injection, no kernel interaction, no network calls.
+**Collection layer** reads from live system only — WMI, .NET APIs, registry, filesystem. No process injection, no kernel interaction, no network calls.
 
 **Heuristic engine** runs inline during collection: path-based IOCs, signature validation, C2 pipe pattern matching, known attacker tool detection, credential security posture checks.
 
-**Reporting layer** runs last: consolidates all findings into `triage_highlights.csv` with severity and MITRE ATT&CK IDs, generates the HTML report, and packages everything into a ZIP.
+**Reporting layer** runs last: consolidates all findings into `triage_highlights.csv` with severity and MITRE ATT&CK IDs, generates the HTML report, packages the ZIP.
 
 ---
 
@@ -136,30 +210,27 @@ This section is for **blue teams** evaluating the tool and for **operators** who
 
 ## HTML report preview
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  ◆ TRIAGE REPORT                              ┌──────────────┐   │
-│  ZavetSec Express Triage v1.1 // DFIR         │   HIGH       │   │
-│                                               └──────────────┘   │
-│  HOST: WORKSTATION-01  OS: Windows 11 Pro  BUILD: 22631          │
-│  COLLECTED: 2026-03-19 09:11:03  DURATION: 4m 12s  ADMIN: True   │
-├──────────┬──────────┬──────────┬──────────┬──────────┬──────────┤
-│ CRITICAL │   HIGH   │  MEDIUM  │  TOTAL   │PROCESSES │ EXT CONN │
-│    0     │    7     │    4     │   11     │   125    │    33    │
-├──────────┴──────────┴──────────┴──────────┴──────────┴──────────┤
-│  Findings │ System │ Processes │ Network │ Persistence │ MITRE   │
-├───────────────────────────────────────────────────────────────── │
-│ CATEGORY      SEV     DESCRIPTION                      MITRE     │
-│ ─────────────────────────────────────────────────────────────── │
-│ Credentials   HIGH    WDigest plaintext caching ENABLED T1003.001│
-│ Credentials   MEDIUM  LSA Protection (PPL) not enabled  T1003.001│
-│ Network       HIGH    Suspicious external conn: curl…   T1071    │
-│ Persistence   HIGH    IFEO debugger hijack: sethc.exe   T1546.012│
-│ Forensics     HIGH    No VSS shadow copies found        T1490    │
-└──────────────────────────────────────────────────────────────────┘
-```
+The HTML report is a self-contained single file — no server, no external resources, opens in any browser on an isolated analyst workstation.
 
-The HTML report is a self-contained single file — no server, no external resources. Open directly in any browser on an isolated analyst workstation.
+**Header** — host, OS, risk badge, collection metadata
+
+| CRITICAL | HIGH | MEDIUM | TOTAL | PROCESSES | EXT CONN |
+|:--------:|:----:|:------:|:-----:|:---------:|:--------:|
+| 0 | 7 | 4 | 11 | 125 | 33 |
+
+**Tabs** — Findings · System · Processes · Network · Persistence · MITRE ATT&CK
+
+**Findings table** (sample output):
+
+| Category | Severity | Description | MITRE |
+|----------|----------|-------------|-------|
+| Credentials | `HIGH` | WDigest plaintext caching ENABLED | T1003.001 |
+| Credentials | `MEDIUM` | LSA Protection (PPL) not enabled | T1003.001 |
+| Network | `HIGH` | Suspicious external conn: curl.exe → 185.220.x.x:443 | T1071 |
+| Persistence | `HIGH` | IFEO debugger hijack: sethc.exe → cmd.exe | T1546.012 |
+| Forensics | `HIGH` | No VSS shadow copies found | T1490 |
+
+Each finding links to the relevant source file in the archive. MITRE technique IDs link to [attack.mitre.org](https://attack.mitre.org).
 
 ---
 
@@ -330,6 +401,33 @@ Findings are automatically tagged with technique IDs and surfaced in both `triag
 
 ### v1.0
 - Initial release — 17 collection modules
+
+---
+
+## Roadmap
+
+The script is functional and stable. Planned improvements:
+
+- [ ] `LITE` mode flag — skip raw EVTX copy for faster, smaller collection
+- [ ] Amcache / ShimCache module — additional execution evidence
+- [ ] MFT timeline sampling — recent file creations in high-risk directories  
+- [ ] Expandable IOC lists — external config file for custom pipe patterns, attacker tool names, suspicious domains
+- [ ] JSON-only output mode — for integration with SIEM ingestion pipelines
+
+Contributions welcome — see below.
+
+---
+
+## Contributing
+
+The most useful contributions:
+
+- **New attacker tool names** for the Prefetch flagging list (`$knownAttackerTools`)
+- **New C2 named pipe patterns** (`$c2PipePatterns`) — Sliver, Havoc, Brute Ratel signatures
+- **Bug reports** — unexpected errors on specific Windows versions or domain configurations
+- **False positive reports** — legitimate software triggering `Suspicious = True`
+
+Open an issue or submit a pull request. Keep changes PS 5.1 compatible and zero-dependency.
 
 ---
 

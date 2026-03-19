@@ -1,4 +1,4 @@
-ZavetSec Triage v1.0 — Capability Reference
+ZavetSec Triage v1.1 — Capability Reference
 ============================================
 Detailed description of collected artifacts and their forensic value.
 
@@ -48,14 +48,18 @@ Forensic value:
 
 
 [03] NETWORK STATE
-Files: Network\tcp_connections.csv, Network\udp_endpoints.csv,
+Files: Network\tcp_connections.csv, Network\tcp_established.csv,
+       Network\tcp_listening.csv, Network\udp_endpoints.csv,
        Network\dns_cache.csv, Network\arp_table.txt,
-       Network\named_pipes.csv
+       Network\named_pipes.csv, Network\adapters.csv,
+       Network\ip_addresses.csv
 
 What is collected:
-  All TCP/UDP connections with local/remote address, port, state,
-  owning PID and process name. Full DNS resolver cache. ARP table
-  (IP-to-MAC mapping). All named pipes with owner process.
+  All TCP connections with local/remote address, port, state, owning
+  PID, process name and process path. IsExternal flag pre-calculated.
+  UDP endpoints with local address, port, PID, process name and path.
+  Full DNS resolver cache. ARP table (IP-to-MAC mapping). All named
+  pipes with owner PID, process name and process path on disk.
 
 Forensic value:
   - ESTABLISHED connections to external IPs = active C2 candidates
@@ -65,8 +69,12 @@ Forensic value:
     catches C2 domains not visible in active connections
   - ARP table reconstructs which hosts were recently contacted on LAN,
     useful for lateral movement detection
-  - Named pipes: known C2 framework signatures (Cobalt Strike, Meterpreter,
-    MSF post-ex) are auto-flagged — msagent_, postex_, MSSE-* patterns
+  - UDP endpoints: shows which process holds each UDP socket — useful
+    for spotting tunneling tools and covert channels disguised as DNS
+  - Named pipes: known C2 framework signatures (Cobalt Strike,
+    Meterpreter, MSF post-ex) are auto-flagged — msagent_, postex_,
+    MSSE-* patterns. OwnerPID + ProcessPath columns identify the binary
+    holding each pipe without additional tooling
 
 
 [04] PERSISTENCE
@@ -74,16 +82,17 @@ Files: Persistence\autoruns.csv, Persistence\scheduled_tasks.csv,
        Persistence\services.csv, Persistence\wmi_subscriptions.json
 
 Note: autoruns.csv is a single consolidated file containing all
-autorun sources — Run/RunOnce keys, Winlogon, IFEO, LSA SSP,
-BootExecute, COM hijacks, Startup folders. Each row has a Source
-field identifying the type.
+autorun sources — Run/RunOnce keys, Winlogon, IFEO, AppInit DLLs,
+LSA SSP, BootExecute, COM hijacks, Startup folders. Each row has a
+Source field identifying the type.
 
 What is collected:
   Registry Run/RunOnce keys (HKLM + HKCU, all users). Winlogon
   Userinit and Shell values. Image File Execution Options debugger
-  hijacks. LSA Security Support Providers. All scheduled tasks with
-  command, trigger, author, last run time. All services with binary
-  path, start type, state. WMI event subscriptions (consumer + filter).
+  hijacks. AppInit_DLLs. LSA Security Support Providers. BootExecute.
+  HKCU COM hijacks. All scheduled tasks with command, trigger, author,
+  last run time. All services with binary path, start type, state.
+  WMI event subscriptions (consumer + filter + binding).
 
 Forensic value:
   - Run keys are the most abused persistence mechanism — any unknown
@@ -92,6 +101,7 @@ Forensic value:
     classic for accessibility feature (sethc.exe, osk.exe) backdoors
   - Winlogon Shell replacement persists across all logins
   - LSA SSP is loaded into lsass — malicious SSP = credential harvester
+  - AppInit_DLLs loaded into every process using user32.dll
   - Scheduled tasks: attacker-created tasks often have no description,
     run from unusual paths, or use encoded commands
   - Services with binpath in writable directories = likely planted
@@ -118,10 +128,13 @@ Forensic value:
     2=interactive — unusual type for account reveals access method
   - Kerberos tickets with unusual service names or abnormal expiry
     can indicate pass-the-ticket or golden ticket attack (T1558)
+  - Dollar-sign accounts ($) outside of expected machine accounts
+    are auto-flagged as HIGH
 
 
 [06] POWERSHELL ARTIFACTS
-Files: Users\ps_history_<username>.txt (one per user)
+Files: Users\ps_history_<username>.txt (one per user),
+       Users\ps_language_mode.txt
 
 What is collected:
   PowerShell command history from ConsoleHost_history.txt for every
@@ -138,14 +151,16 @@ Forensic value:
 
 
 [07] EVENT LOGS
-Files: Logs\evtlog_<logname>.csv (targeted IDs),
+Files: Logs\evtx_<logname>.csv (targeted IDs),
        Logs\*.evtx (raw, all winevt logs)
 
 What is collected:
-  Targeted Event IDs exported as CSV: 4624/4625/4648/4672/4768/4769
-  (authentication), 4688 (process creation), 7045/7036 (services),
-  4698/4702 (scheduled tasks), 1102 (log clear), 4719 (audit policy),
-  4103/4104 (PowerShell script block). Raw EVTX copies of all logs.
+  Targeted Event IDs exported as CSV: 4624/4625/4648/4672 (logon),
+  4688 (process creation), 7045/7036 (services), 4698/4699/4700
+  (scheduled tasks), 1102 (log clear), 4103/4104 (PowerShell script
+  block), 4720/4726/4732 (account changes), RDP events 21-25,
+  Sysmon 1/3/7/8/10/11, Defender 1116/1117, BITS 59/60, WMI 5857-5861.
+  Raw EVTX copies of all logs in winevt\Logs.
 
 Forensic value:
   - 4624/4625: successful and failed logons — brute force, spray
@@ -154,29 +169,27 @@ Forensic value:
   - 4688: process creation (requires audit policy) — full execution chain
   - 7045: new service installed — common malware/tool deployment method
   - 1102: security log cleared — major anti-forensics indicator
-  - 4719: audit policy changed — attacker disabling logging
   - 4104: PowerShell script block logging — captures obfuscated scripts
     after deobfuscation, invaluable for PowerShell-based attacks
   - Raw EVTX files enable Chainsaw/Hayabusa Sigma rule scanning:
     chainsaw hunt Logs\ --sigma rules\ --mapping mapping.yml
+    hayabusa csv-timeline -d Logs\ -o timeline.csv
 
 
 [08] PREFETCH
 Files: Forensics\prefetch.csv
 
 What is collected:
-  All .pf files from C:\Windows\Prefetch: executable name, run count,
-  last run times (up to 8 timestamps on Win8+), referenced file paths.
-  30+ known attacker tool names are checked automatically.
+  All .pf files from C:\Windows\Prefetch: executable name, last run
+  time, file size. 50+ known attacker tool names checked automatically.
 
 Forensic value:
   - Prefetch proves execution — even if binary is deleted, .pf file remains
-  - Run count and timestamps reconstruct attack timeline precisely
-  - Referenced paths show what files the tool accessed during execution
+  - Last run timestamp reconstructs attack timeline
   - Auto-flagged tools: Mimikatz, ProcDump, PSExec, CrackMapExec,
     Cobalt Strike, Meterpreter, Rubeus, BloodHound, LaZagne, Nmap,
-    Netcat, Chisel, Ligolo, Rclone, AnyDesk, WinSCP and 15+ more
-  - KnownAttacker=True column isolates confirmed tool executions instantly
+    Netcat, Chisel, Ligolo, Rclone, AnyDesk, WinSCP and 30+ more
+  - KnownThreat=True column isolates confirmed tool executions instantly
 
 
 [09] FILE ACTIVITY (LNK)
@@ -205,7 +218,8 @@ Note: Each file is created only if data exists for that category.
 What is collected:
   UserAssist entries (ROT13 decoded) with run count and last execution
   time. MUICache entries (all executed programs that registered a display
-  name). TypedURLs from Internet Explorer/Edge.
+  name). TypedURLs from Internet Explorer/Edge. RecentDocs extension
+  subcategory list.
 
 Forensic value:
   - UserAssist proves GUI program execution with timestamps —
@@ -237,23 +251,28 @@ Forensic value:
 
 
 [12] CONFIGURATION
-Files: Config\hosts_file.txt, Config\firewall_rules_inbound.csv,
+Files: Config\hosts_file.txt, Config\firewall_profiles.csv,
+       Config\firewall_rules_inbound.csv,
        Config\firewall_rules_outbound.csv, Config\ads_scan.csv
 
 Note: ads_scan.csv is created only if alternate data streams are found.
+      firewall_rules files now include an Action column (Allow/Block)
+      and cover all enabled rules regardless of action.
 
 What is collected:
-  Full hosts file content. All Windows Firewall rules (inbound and
-  outbound) with action, protocol, ports, program path. ADS (Alternate
-  Data Streams) scan of common attacker staging directories.
+  Full hosts file content. Firewall profile status (Domain/Private/Public).
+  All enabled Windows Firewall rules — inbound and outbound — with Action
+  (Allow/Block), protocol, ports, program path. ADS scan of common
+  attacker staging directories.
 
 Forensic value:
   - Hosts file: entries overriding security tool domains (AV updates,
     SIEM, EDR telemetry) = defense evasion, or redirecting to attacker
     infrastructure
-  - Firewall rules: attacker-added rules allowing inbound connections
-    are a strong backdoor/RAT indicator
-  - Disabled outbound rules that should be active = policy tampering
+  - Firewall rules: Action column immediately shows Allow vs Block without
+    needing to filter by separate files; attacker-added Allow-inbound
+    rules are a strong backdoor/RAT indicator
+  - Disabled firewall profiles are auto-flagged as HIGH (T1562.004)
   - ADS scan: data hidden in alternate streams in Temp, AppData,
     ProgramData — classic fileless malware staging technique (T1564.004)
 
@@ -267,7 +286,7 @@ What is collected:
 
 Forensic value:
   - Absence of shadow copies on a system that normally has them =
-    strong ransomware indicator, auto-flagged as CRITICAL (T1490)
+    strong ransomware indicator, auto-flagged as HIGH (T1490)
   - Existing shadows can be mounted to recover deleted files or access
     previous versions of modified artifacts
   - Creation timestamps of shadows help establish when the system was
@@ -275,14 +294,17 @@ Forensic value:
 
 
 [14] BROWSER HISTORY
-Files: Forensics\browser_history_all.csv,
-       Forensics\RawDB\<browser>_<profile>_<dbfile>
+File: Forensics\browser_history_all.csv
+
+Note: Raw SQLite DB copies are not saved in v1.1 — CSV output only.
+      If sqlite3.exe is present alongside the script, full parsing is
+      done (URL + title + visit count + timestamp). Otherwise URL-only
+      regex fallback is used.
 
 What is collected:
   History from 16 browsers: Chrome, Edge, Firefox, Opera, Brave,
-  Vivaldi, Yandex, Tor Browser, Chromium, IE, and others. All user
-  profiles. URLs, titles, visit counts, timestamps. Raw SQLite DB
-  files copied for offline parsing.
+  Vivaldi, Yandex, Tor Browser, Chromium and others. All user profiles.
+  URLs, titles (with sqlite3.exe), visit counts, timestamps.
 
 Forensic value:
   - Attacker browser activity: C2 panel access, exfiltration via web
@@ -290,8 +312,8 @@ Forensic value:
   - Credential theft research: visited phishing pages, password reset
     pages, credential dump sites
   - Data exfiltration: WeTransfer, Mega, Google Drive upload pages
-  - Raw DB copies allow recovery of deleted history records using
-    SQLite forensics tools (DB Browser, Autopsy, SQLite Forensic Explorer)
+  - Suspicious domain patterns auto-flagged: ngrok, serveo, pastebin,
+    temp-mail, anonfile, .onion domains
 
 
 [15] BITS JOBS
@@ -342,11 +364,39 @@ What is collected:
 
 Forensic value:
   - triage_highlights.csv is the analyst's starting point —
-    all IOCs from all 17 modules consolidated, sorted by severity
+    all IOCs from all modules consolidated, sorted by severity
   - Risk level (LOW/MEDIUM/HIGH/CRITICAL) gives immediate triage priority
   - MITRE ATT&CK technique IDs attached to every finding
   - Manifest enables integrity verification and completeness check
   - Metadata documents chain of custody: who ran it, when, on what system
+
+
+[18] HTML REPORT
+File: triage_report.html
+
+What is collected:
+  Interactive single-file HTML report generated at end of collection.
+  No server or internet required — open directly in any browser.
+
+Contents:
+  - Risk level badge (CRITICAL / HIGH / MEDIUM / LOW)
+  - Summary cards: finding counts by severity, process count,
+    external connections, files collected, total size
+  - Threat findings table with severity color coding and category grouping
+  - System information with disk usage visualization
+  - Processes: suspicious processes tab + full process list
+  - Network: external connections, all TCP, listening ports, named pipes
+  - Persistence: autoruns, scheduled tasks, running/suspicious services
+  - MITRE ATT&CK technique tags linked to attack.mitre.org
+  - Recommended next steps for the analyst
+
+Forensic value:
+  - Enables immediate triage without opening any CSV — visual overview
+    in seconds after collection
+  - Tabbed layout separates data categories without requiring Excel
+  - Severity-colored rows highlight CRITICAL/HIGH findings instantly
+  - Self-contained — safe to open on isolated analyst workstation,
+    no external resources loaded
 
 
 ════════════════════════════════════════════════════════════════
@@ -383,9 +433,9 @@ Forensic value:
 Что собирается:
   Все запущенные процессы: PID, родительский PID, имя, полный путь,
   командная строка, время запуска, SHA256-хеш, статус подписи
-  Authenticode, имя пользователя, ID сессии. Обнаружение маскировки
-  (имя процесса совпадает с системным, но запущен из нестандартного
-  пути). Анализ цепочки родителей.
+  Authenticode, имя пользователя. Обнаружение маскировки (имя процесса
+  совпадает с системным, но запущен из нестандартного пути). Анализ
+  цепочки родителей.
 
 Криминалистическая ценность:
   - Неподписанные или с недействительной подписью процессы в системных
@@ -400,15 +450,18 @@ Forensic value:
 
 
 [03] СЕТЕВОЕ СОСТОЯНИЕ
-Файлы: Network\tcp_connections.csv, Network\udp_endpoints.csv,
+Файлы: Network\tcp_connections.csv, Network\tcp_established.csv,
+       Network\tcp_listening.csv, Network\udp_endpoints.csv,
        Network\dns_cache.csv, Network\arp_table.txt,
-       Network\named_pipes.csv
+       Network\named_pipes.csv, Network\adapters.csv,
+       Network\ip_addresses.csv
 
 Что собирается:
-  Все TCP/UDP-соединения с локальным/удалённым адресом, портом,
-  состоянием, PID и именем процесса-владельца. Полный кеш DNS-резолвера.
-  ARP-таблица (соответствие IP↔MAC). Все именованные каналы с
-  процессом-владельцем.
+  Все TCP-соединения с локальным/удалённым адресом, портом, состоянием,
+  PID, именем и путём процесса-владельца. Флаг IsExternal вычислен
+  заранее. UDP-эндпоинты с локальным адресом, портом, PID, именем и
+  путём процесса. Полный кеш DNS-резолвера. ARP-таблица (IP↔MAC).
+  Все именованные каналы с PID, именем и путём процесса-владельца.
 
 Криминалистическая ценность:
   - ESTABLISHED-соединения с внешними IP = кандидаты на активный C2
@@ -419,9 +472,12 @@ Forensic value:
   - ARP-таблица восстанавливает список хостов, к которым недавно
     обращались в локальной сети — полезно для обнаружения бокового
     перемещения
+  - UDP-эндпоинты: показывают какой процесс держит каждый UDP-сокет —
+    помогает выявить туннелирование и скрытые каналы под видом DNS
   - Именованные каналы: известные сигнатуры C2-фреймворков (Cobalt
-    Strike, Meterpreter, MSF post-ex) автоматически помечаются —
-    паттерны msagent_, postex_, MSSE-*
+    Strike, Meterpreter, MSF post-ex) автоматически помечаются.
+    Колонки OwnerPID + ProcessName + ProcessPath идентифицируют бинарь
+    без дополнительных инструментов
 
 
 [04] ЗАКРЕПЛЕНИЕ (PERSISTENCE)
@@ -429,33 +485,33 @@ Forensic value:
        Persistence\services.csv, Persistence\wmi_subscriptions.json
 
 Примечание: autoruns.csv — единый сводный файл, содержащий все
-механизмы автозапуска: Run/RunOnce ключи, Winlogon, IFEO, LSA SSP,
-BootExecute, COM-перехваты, папки автозагрузки. В каждой строке
+механизмы автозапуска: Run/RunOnce ключи, Winlogon, IFEO, AppInit DLLs,
+LSA SSP, BootExecute, COM-перехваты, папки автозагрузки. В каждой строке
 поле Source указывает тип механизма.
 
 Что собирается:
   Ключи реестра Run/RunOnce (HKLM + HKCU, все пользователи). Значения
-  Winlogon Userinit и Shell. Перехваты IFEO (Image File Execution
-  Options). LSA Security Support Providers. Все задачи планировщика с
-  командой, триггером, автором, временем последнего запуска. Все службы
-  с путём к бинарю, типом запуска, состоянием. WMI event subscriptions.
+  Winlogon Userinit и Shell. Перехваты IFEO. AppInit_DLLs. LSA Security
+  Support Providers. BootExecute. COM-перехваты в HKCU. Все задачи
+  планировщика с командой, триггером, автором, временем последнего
+  запуска. Все службы с путём, типом запуска, состоянием. WMI event
+  subscriptions (consumer + filter + binding).
 
 Криминалистическая ценность:
   - Ключи Run — самый эксплуатируемый механизм закрепления; любой
     неизвестный элемент с путём в Temp или AppData — высокий приоритет
   - Перехват IFEO debugger позволяет выполнить код при запуске любого
     бинаря — классика для бэкдоров через специальные возможности
-    (sethc.exe, osk.exe)
   - Замена Winlogon Shell сохраняется при всех входах в систему
   - LSA SSP загружается в lsass — вредоносный SSP = перехватчик учётных
     данных
+  - AppInit_DLLs загружается в каждый процесс, использующий user32.dll
   - Задачи планировщика: созданные атакующим часто не имеют описания,
     запускаются из нестандартных путей или используют закодированные
     команды
   - Службы с binpath в записываемых директориях = вероятно, подброшены
   - WMI-подписки — бесфайловые, переживают перезагрузки, невидимы для
-    большинства AV, обнаруживаются только WMI-запросом (этот модуль
-    именно так и делает)
+    большинства AV, обнаруживаются только WMI-запросом
 
 
 [05] УЧЁТНЫЕ ЗАПИСИ
@@ -475,14 +531,14 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
   - Дата смены пароля на встроенных аккаунтах (Administrator, Guest)
     указывает на смену учётных данных после компрометации
   - Типы сессий: 3=сетевой, 10=удалённый интерактивный (RDP),
-    2=интерактивный — нетипичный тип для аккаунта раскрывает метод
-    доступа
-  - Kerberos-билеты с нестандартными именами служб или аномальным сроком
-    могут указывать на pass-the-ticket или golden ticket (T1558)
+    2=интерактивный — нетипичный тип раскрывает метод доступа
+  - Kerberos-билеты с аномальным сроком = pass-the-ticket / golden ticket
+  - Аккаунты с символом $ (кроме машинных) автоматически помечаются HIGH
 
 
 [06] АРТЕФАКТЫ POWERSHELL
-Файлы: Users\ps_history_<username>.txt (отдельный для каждого)
+Файлы: Users\ps_history_<username>.txt (отдельный для каждого),
+       Users\ps_language_mode.txt
 
 Что собирается:
   История команд PowerShell из ConsoleHost_history.txt для каждого
@@ -500,15 +556,16 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
 
 
 [07] ЖУРНАЛЫ СОБЫТИЙ
-Файлы: Logs\evtlog_<имя_журнала>.csv (целевые ID),
+Файлы: Logs\evtx_<имя_журнала>.csv (целевые ID),
        Logs\*.evtx (сырые копии всех winevt-журналов)
 
 Что собирается:
-  Целевые Event ID в CSV: 4624/4625/4648/4672/4768/4769
-  (аутентификация), 4688 (создание процесса), 7045/7036 (службы),
-  4698/4702 (задачи планировщика), 1102 (очистка журнала), 4719
-  (политика аудита), 4103/4104 (PowerShell script block). Сырые копии
-  всех EVTX.
+  Целевые Event ID в CSV: 4624/4625/4648/4672 (вход в систему),
+  4688 (создание процесса), 7045/7036 (службы), 4698/4699/4700
+  (задачи планировщика), 1102 (очистка журнала), 4103/4104
+  (PowerShell script block), 4720/4726/4732 (изменения аккаунтов),
+  RDP 21-25, Sysmon 1/3/7/8/10/11, Defender 1116/1117, BITS 59/60,
+  WMI 5857-5861. Сырые копии всех EVTX.
 
 Криминалистическая ценность:
   - 4624/4625: успешные и неудачные входы — брутфорс, спрей паролей
@@ -516,8 +573,8 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
   - 4672: вход с особыми привилегиями — отслеживает доступ уровня admin
   - 4688: создание процесса (требует политики аудита) — полная цепочка
   - 7045: установка новой службы — распространённый метод развёртывания
-  - 1102: очистка журнала безопасности — главный индикатор антикриминалистики
-  - 4719: изменение политики аудита — атакующий отключает логирование
+  - 1102: очистка журнала безопасности — главный индикатор
+    антикриминалистики
   - 4104: script block logging — захватывает обфусцированные скрипты
     после деобфускации, бесценно для атак на базе PowerShell
   - Сырые EVTX позволяют применять Sigma-правила через Chainsaw/Hayabusa
@@ -528,20 +585,18 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
 
 Что собирается:
   Все .pf файлы из C:\Windows\Prefetch: имя исполняемого файла,
-  счётчик запусков, до 8 временных меток последних запусков (Win8+),
-  пути к файлам, к которым был обращён процесс. Автоматическая проверка
-  30+ известных инструментов атакующих.
+  время последнего запуска, размер файла. Автоматическая проверка
+  50+ известных инструментов атакующих.
 
 Криминалистическая ценность:
   - Prefetch доказывает факт выполнения — даже если бинарь удалён,
     .pf-файл остаётся
-  - Счётчик и временные метки точно восстанавливают таймлайн атаки
-  - Пути к файлам показывают, к чему обращался инструмент при запуске
+  - Временная метка последнего запуска восстанавливает таймлайн атаки
   - Автоматически помечаемые инструменты: Mimikatz, ProcDump, PSExec,
     CrackMapExec, Cobalt Strike, Meterpreter, Rubeus, BloodHound,
     LaZagne, Nmap, Netcat, Chisel, Ligolo, Rclone, AnyDesk, WinSCP
-    и 15+ других
-  - Колонка KnownAttacker=True мгновенно изолирует подтверждённые
+    и 30+ других
+  - Колонка KnownThreat=True мгновенно изолирует подтверждённые
     запуски инструментов
 
 
@@ -560,8 +615,7 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
   - Временные метки LNK отличаются от меток целевого файла — полезно
     для выявления расхождений в таймлайне
   - Может раскрыть доступ к чувствительным файлам (учётные данные,
-    конфиги, БД) даже если сами файлы удалены или находятся на
-    удалённом ресурсе
+    конфиги, БД) даже если сами файлы удалены или на удалённом ресурсе
 
 
 [10] КРИМИНАЛИСТИКА РЕЕСТРА
@@ -573,8 +627,8 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
 Что собирается:
   Записи UserAssist (ROT13 декодирован) со счётчиком запусков и
   временем последнего выполнения. Записи MUICache (все программы,
-  которые зарегистрировали отображаемое имя). TypedURLs из
-  Internet Explorer/Edge.
+  зарегистрировавшие отображаемое имя). TypedURLs из IE/Edge.
+  Список расширений RecentDocs.
 
 Криминалистическая ценность:
   - UserAssist доказывает запуск GUI-программ с временными метками —
@@ -583,8 +637,8 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
     обфусцированные пути, этот модуль — реальные
   - MUICache фиксирует запуски программ, которые Prefetch может
     пропустить (сетевые диски, однократные запуски)
-  - TypedURLs показывают URL, введённые вручную в адресную строку
-    браузера — раскрывает C2-домены или сайты эксфильтрации
+  - TypedURLs показывают URL, введённые вручную в адресную строку —
+    раскрывает C2-домены или сайты эксфильтрации
 
 
 [11] БЕЗОПАСНОСТЬ УЧЁТНЫХ ДАННЫХ
@@ -595,8 +649,8 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
   Credential Guard. Статус LSA Protected Process Light (PPL).
 
 Криминалистическая ценность:
-  - WDigest включён = учётные данные в открытом виде кешируются в LSASS
-    — прямой индикатор того, что атакующий мог включить его для кражи
+  - WDigest включён = учётные данные в открытом виде кешируются в LSASS —
+    прямой индикатор того, что атакующий мог включить его для кражи
     учёток (T1003.001) или системная мисконфигурация
   - Credential Guard отключён на современных системах — уязвимость;
     учётные данные не изолированы в VSM, LSASS напрямую дампируется
@@ -605,27 +659,28 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
 
 
 [12] КОНФИГУРАЦИЯ
-Файлы: Config\hosts_file.txt, Config\firewall_rules_inbound.csv,
+Файлы: Config\hosts_file.txt, Config\firewall_profiles.csv,
+       Config\firewall_rules_inbound.csv,
        Config\firewall_rules_outbound.csv, Config\ads_scan.csv
 
-Примечание: ads_scan.csv создаётся только если найдены альтернативные потоки данных.
+Примечание: ads_scan.csv создаётся только если найдены ADS.
+      Файлы правил фаервола теперь содержат колонку Action (Allow/Block)
+      и охватывают все активные правила в обоих направлениях.
 
 Что собирается:
-  Полное содержимое hosts-файла. Все правила Windows Firewall
-  (входящие и исходящие) с действием, протоколом, портами, путём
-  к программе. Сканирование ADS (Alternate Data Streams) в типичных
-  директориях атакующих.
+  Полное содержимое hosts-файла. Статус профилей фаервола
+  (Domain/Private/Public). Все активные правила Windows Firewall —
+  входящие и исходящие — с Action (Allow/Block), протоколом, портами,
+  путём к программе. Сканирование ADS в типичных директориях атакующих.
 
 Криминалистическая ценность:
   - Hosts-файл: записи, переопределяющие домены инструментов защиты
-    (обновления AV, SIEM, телеметрия EDR) = обход защиты, или
-    перенаправление на инфраструктуру атакующего
-  - Правила фаервола: добавленные атакующим правила, разрешающие
-    входящие соединения = сильный индикатор бэкдора/RAT
-  - Отключённые исходящие правила = манипуляция политикой
-  - Сканирование ADS: данные, скрытые в альтернативных потоках в Temp,
-    AppData, ProgramData — классическая техника бесфайловой малвари
-    (T1564.004)
+    (обновления AV, SIEM, телеметрия EDR) = обход защиты
+  - Правила фаервола: колонка Action сразу показывает Allow vs Block;
+    добавленные атакующим Allow-входящие правила = сильный IOC бэкдора
+  - Отключённые профили фаервола автоматически помечаются как HIGH
+  - Сканирование ADS: данные в альтернативных потоках в Temp, AppData,
+    ProgramData — классическая техника бесфайловой малвари (T1564.004)
 
 
 [13] ТЕНЕВЫЕ КОПИИ
@@ -637,36 +692,36 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
   создания, том, состояние, машина-источник.
 
 Криминалистическая ценность:
-  - Отсутствие теневых копий на системе, где они должны быть =
-    сильный индикатор шифровальщика, автоматически помечается как
-    CRITICAL (T1490)
+  - Отсутствие теневых копий = сильный индикатор шифровальщика,
+    автоматически помечается как HIGH (T1490)
   - Существующие копии можно примонтировать для восстановления удалённых
     файлов или доступа к предыдущим версиям изменённых артефактов
   - Временные метки создания копий помогают установить, когда система
-    последний раз была в заведомо чистом состоянии до компрометации
+    последний раз была в заведомо чистом состоянии
 
 
 [14] ИСТОРИЯ БРАУЗЕРОВ
-Файлы: Forensics\browser_history_all.csv,
-       Forensics\RawDB\<браузер>_<профиль>_<файл_БД>
+Файл: Forensics\browser_history_all.csv
+
+Примечание: в v1.1 сырые SQLite-базы не сохраняются — только CSV.
+      При наличии sqlite3.exe рядом со скриптом выполняется полный
+      разбор (URL + заголовок + счётчик + временная метка). Без него —
+      regex-фолбэк только по URL.
 
 Что собирается:
   История из 16 браузеров: Chrome, Edge, Firefox, Opera, Brave,
-  Vivaldi, Yandex, Tor Browser, Chromium, IE и других. Все профили
-  всех пользователей. URL, заголовки, счётчики посещений, временные
-  метки. Сырые SQLite-базы скопированы для офлайн-разбора.
+  Vivaldi, Yandex, Tor Browser, Chromium и других. Все профили всех
+  пользователей. URL, заголовки (с sqlite3.exe), счётчики посещений,
+  временные метки.
 
 Криминалистическая ценность:
   - Активность атакующего в браузере: доступ к C2-панели, эксфильтрация
-    через веб-загрузку, обращение к pastebin/github для загрузки
-    полезных нагрузок
+    через веб-загрузку, обращение к pastebin/github для загрузки ПН
   - Исследование кражи учётных данных: посещённые фишинговые страницы,
     страницы сброса пароля, сайты с дампами
-  - Эксфильтрация данных: страницы загрузки WeTransfer, Mega, Google
-    Drive
-  - Сырые копии БД позволяют восстановить удалённые записи истории
-    инструментами SQLite-криминалистики (DB Browser, Autopsy,
-    SQLite Forensic Explorer)
+  - Эксфильтрация: страницы загрузки WeTransfer, Mega, Google Drive
+  - Подозрительные домены автоматически помечаются: ngrok, serveo,
+    pastebin, temp-mail, anonfile, .onion-домены
 
 
 [15] ЗАДАНИЯ BITS
@@ -681,17 +736,16 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
   и изменения, URL-источника, путь назначения.
 
 Криминалистическая ценность:
-  - BITS — LOLBin (T1197); используется атакующими для скрытых загрузок,
+  - BITS — LOLBin (T1197); используется для скрытых загрузок,
     переживающих перезагрузки и маскирующихся под трафик Windows Update
-  - Задания, загружающие с не-Microsoft URL в Temp/AppData = IOC,
-    автоматически помечаются как HIGH
+  - Задания с не-Microsoft URL в Temp/AppData = IOC, помечаются HIGH
   - Завершённые задания могут сохранять записи — раскрывает исторические
-    загрузки, даже если файл уже был запущен и удалён
+    загрузки, даже если файл уже запущен и удалён
   - Поле Owner определяет, какая учётная запись инициировала передачу
 
 
 [16] БУФЕР ОБМЕНА
-Файлы: Forensics\clipboard.txt
+Файл: Forensics\clipboard.txt
 
 Что собирается:
   Текущее текстовое содержимое буфера обмена на момент сбора.
@@ -700,11 +754,9 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
 
 Криминалистическая ценность:
   - Захватывает учётные данные в середине операции — атакующий мог
-    скопировать пароль, API-токен или приватный ключ до вашего запуска
-  - Обнаружение чувствительных паттернов автоматически помечает
-    находки как HIGH (T1552)
-  - Волатильный артефакт — доступен только на живой системе, исчезает
-    после перезагрузки
+    скопировать пароль, API-токен или приватный ключ до запуска триажа
+  - Обнаружение чувствительных паттернов автоматически помечает HIGH
+  - Волатильный артефакт — доступен только на живой системе
 
 
 [17] МЕТАДАННЫЕ И СВОДКА
@@ -719,10 +771,37 @@ BootExecute, COM-перехваты, папки автозагрузки. В к�
 
 Криминалистическая ценность:
   - triage_highlights.csv — отправная точка аналитика: все IOC из всех
-    17 модулей сведены вместе, отсортированы по критичности
+    модулей сведены вместе, отсортированы по критичности
   - Уровень риска (LOW/MEDIUM/HIGH/CRITICAL) даёт немедленный приоритет
-    триажа
   - К каждой находке привязан ID техники MITRE ATT&CK
-  - Манифест позволяет проверить целостность и полноту сбора
   - Метаданные документируют цепочку хранения: кто запустил, когда,
     на какой системе
+
+
+[18] HTML-ОТЧЁТ
+Файл: triage_report.html
+
+Что собирается:
+  Интерактивный одностраничный HTML-отчёт, генерируется в конце
+  сбора. Не требует сервера или интернета — открывается напрямую
+  в любом браузере.
+
+Содержимое:
+  - Бейдж уровня риска (CRITICAL / HIGH / MEDIUM / LOW)
+  - Карточки сводки: количество находок по критичности, процессы,
+    внешние соединения, собранные файлы, общий размер
+  - Таблица угроз с цветовой маркировкой по критичности и
+    группировкой по категориям
+  - Системная информация с визуализацией использования диска
+  - Процессы: вкладка подозрительных + полный список
+  - Сеть: внешние соединения, все TCP, слушающие порты, named pipes
+  - Закрепление: autoruns, задачи планировщика, службы
+  - Теги MITRE ATT&CK со ссылками на attack.mitre.org
+  - Рекомендуемые следующие шаги для аналитика
+
+Криминалистическая ценность:
+  - Немедленный триаж без открытия CSV — визуальный обзор за секунды
+  - Вкладки разделяют категории данных без необходимости в Excel
+  - Строки с цветовой маркировкой выделяют CRITICAL/HIGH мгновенно
+  - Автономный файл — безопасно открывать на изолированной рабочей
+    станции аналитика, внешние ресурсы не загружаются

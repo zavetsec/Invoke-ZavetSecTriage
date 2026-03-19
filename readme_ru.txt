@@ -1,4 +1,4 @@
-ZavetSec Triage v1.0
+ZavetSec Triage v1.1
 ====================
 Экспресс-триаж для живых Windows-систем.
 Без зависимостей. Без установки. PowerShell 5.1.
@@ -6,15 +6,33 @@ ZavetSec Triage v1.0
 ЧТО ДЕЛАЕТ
 ----------
 Собирает криминалистические артефакты с работающего Windows-хоста и
-упаковывает всё в ZIP с меткой времени. Все 17 модулей сбора работают
-за один проход. Никаких внешних инструментов, интернета и следов на
-диске — кроме итогового ZIP.
+упаковывает всё в ZIP с HTML-отчётом триажа. Все 18 модулей сбора
+работают за один проход. Никаких внешних инструментов, интернета и
+следов на диске — кроме итогового ZIP.
+
+ЧТО НОВОГО В v1.1
+-----------------
+- HTML-отчёт (triage_report.html) в корне архива — открывается в любом
+  браузере, тёмная тема, вкладки, цветовая маркировка по критичности,
+  теги MITRE ATT&CK
+- Правила фаервола: новая колонка Action (Allow/Block); теперь
+  собираются все активные правила в обе стороны, а не только
+  Allow-входящие и Block-исходящие
+- Именованные каналы: добавлены колонки OwnerPID, ProcessName, ProcessPath
+- UDP-соединения: добавлены колонки ProcessName и ProcessPath
+- История браузеров: сырые SQLite-базы убраны, только CSV-вывод
+- Задачи планировщика: исправлена проблема с кодировкой (символ п»ї в
+  начале файла при открытии в Excel)
+- Имя архива: <имя_хоста>_<метка_времени>.zip (без префикса ZavetSec_)
+- Цвета вывода: [+] успех = зелёный, [!] предупреждения = жёлтый,
+  [-] информация = серый
 
 ТРЕБОВАНИЯ
 ----------
 - PowerShell 5.1+
 - Права локального администратора (настоятельно рекомендуется)
-- sqlite3.exe опционально — полный разбор баз браузеров
+- sqlite3.exe опционально — полный разбор истории браузеров с заголовками,
+  счётчиками посещений и временными метками вместо regex-фолбэка
 
 ИСПОЛЬЗОВАНИЕ
 -------------
@@ -34,33 +52,38 @@ ZavetSec Triage v1.0
 
 РЕЗУЛЬТАТ
 ---------
-Файл: ZavetSec_<имя_хоста>_<метка_времени>.zip
+Файл: <имя_хоста>_<метка_времени>.zip
 
 Структура внутри ZIP:
+    triage_report.html     - интерактивный HTML-отчёт, начните отсюда
+    triage_metadata.json   - сводка по сбору и уровень риска
     System\          - информация об ОС, обновления, установленное ПО
     Processes\       - список процессов с хешами и подписями
-    Network\         - соединения, кеш DNS, ARP, именованные каналы
+    Network\         - TCP/UDP с путями процессов, кеш DNS, ARP,
+                       именованные каналы с владельцами
     Persistence\     - ключи автозапуска, задачи, службы, WMI-подписки
-    Users\           - учётные записи, сессии, Kerberos-билеты
+    Users\           - учётные записи, сессии, Kerberos-билеты, история PS
     Logs\            - CSV событий и сырые EVTX-файлы
-    Forensics\       - prefetch, история браузеров, BITS, буфер обмена,
-                       LNK-файлы, артефакты реестра, highlights
-    Config\          - hosts-файл, правила фаервола, сканирование ADS
-    triage_metadata.json   - сводка по сбору и уровень риска
-    triage_highlights.csv  - все срабатывания, отсортированные по критичности
+    Forensics\       - prefetch, история браузеров CSV, BITS, буфер обмена,
+                       LNK-файлы, теневые копии, информация об учётных
+                       данных, highlights (все находки в одном месте)
+    Config\          - hosts-файл, правила фаервола с колонкой Action,
+                       сканирование ADS
+    Registry\        - UserAssist, MUICache, TypedURLs, RecentDocs
 
 ЧТЕНИЕ РЕЗУЛЬТАТОВ
 ------------------
+HTML    - любой браузер, открыть triage_report.html напрямую
 CSV     - Excel или LibreOffice Calc
 JSON    - VS Code, Блокнот, любой браузер
 EVTX    - Просмотр событий Windows
           Chainsaw: chainsaw hunt Logs\ --sigma rules\
           Hayabusa: hayabusa csv-timeline -d Logs\ -o tl.csv
-SQLite  - DB Browser for SQLite (sqlitebrowser.org)
 
 С ЧЕГО НАЧАТЬ
 -------------
-1. Forensics\triage_highlights.csv   -- сортировать по Severity
-2. Processes\processes.csv           -- фильтр Suspicious = True
-3. Network\tcp_connections.csv       -- фильтр IsExternal = True
-4. Forensics\browser_history_all.csv -- открыть в Excel
+1. triage_report.html                - визуальный обзор, открыть в браузере
+2. Forensics\triage_highlights.csv   - сортировать по Severity
+3. Processes\processes.csv           - фильтр Suspicious = True
+4. Network\tcp_connections.csv       - фильтр IsExternal = True и State = Established
+5. Persistence\autoruns.csv          - проверить неизвестные элементы

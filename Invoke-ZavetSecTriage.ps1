@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    ZavetSec Express Triage v1.0 - Zero-dependency DFIR for live Windows systems.
+    ZavetSec Express Triage v1.1 - Zero-dependency DFIR for live Windows systems.
 .DESCRIPTION
     Collects high-value forensic artifacts. No external tools required.
 
@@ -19,12 +19,13 @@
       [11] Credential security   - WDigest, Credential Guard, LSA PPL
       [12] Configuration         - hosts file, firewall in/out rules, ADS scan
       [13] Shadow copies         - VSS enumeration (absence = ransomware IOC T1490)
-      [14] Browser history       - 16 browsers, all users, CSV + raw DB copies
+      [14] Browser history       - 16 browsers, all users, CSV output
       [15] BITS jobs             - stealthy download detection (T1197)
       [16] Clipboard             - text capture, credential pattern detection
       [17] Metadata & summary    - highlights CSV/JSON, file manifest, ZIP
+      [18] HTML report          - triage_report.html with findings, system info, network, threats
 
-    Output: <OutputDir>\ZavetSec_<hostname>_<timestamp>.zip
+    Output: <OutputDir>\<hostname>_<timestamp>.zip
 
     Reading collected files:
       CSV         - Excel or LibreOffice Calc
@@ -32,8 +33,7 @@
       TXT         - Notepad
       EVTX        - double-click in Windows Event Viewer
                     or: Chainsaw / Hayabusa for batch Sigma analysis
-      SQLite DB   - DB Browser for SQLite (optional, for RawDB files)
-                    https://sqlitebrowser.org
+      SQLite DB   - optional: DB Browser for SQLite https://sqlitebrowser.org
 
 .PARAMETER OutputDir
     Where to save the ZIP. Default = script directory.
@@ -41,7 +41,7 @@
     .\Invoke-ZavetSecTriage.ps1
     .\Invoke-ZavetSecTriage.ps1 -OutputDir C:\DFIR
 .NOTES
-    Version   : 1.0
+    Version   : 1.1
     Requires  : PowerShell 5.1+, local Administrator rights
     Encoding  : ASCII-safe (PS 5.1 compatible, no non-ASCII chars)
     External  : none required. sqlite3.exe optional for full browser parse.
@@ -67,7 +67,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 $global:Highlights   = [System.Collections.Generic.List[PSCustomObject]]::new()
 $global:StartTime    = Get-Date
 $global:PhaseCount   = 0
-$global:TotalPhases  = 17
+$global:TotalPhases  = 18
 $hostname            = $env:COMPUTERNAME
 $timestamp           = Get-Date -Format 'yyyyMMdd_HHmmss'
 $triageRoot          = Join-Path $env:TEMP "ZS_${hostname}_${timestamp}"
@@ -87,7 +87,7 @@ function Write-Phase {
     Write-Host ''
     Write-Host "  [*] [$global:PhaseCount/$global:TotalPhases] $T" -ForegroundColor Cyan
 }
-function Write-OK   { param([string]$M); Write-Host "  [+] $M" -ForegroundColor Yellow }
+function Write-OK   { param([string]$M); Write-Host "  [+] $M" -ForegroundColor Green }
 function Write-Warn { param([string]$M); Write-Host "  [!] $M" -ForegroundColor Yellow }
 function Write-Info { param([string]$M); Write-Host "  [-] $M" -ForegroundColor DarkGray }
 
@@ -265,14 +265,14 @@ Write-Host '     / // _` \ V / -_)  _||  _\__ \/ -_) _|    ' -ForegroundColor Cy
 Write-Host '    /___\__,_|\_/\___\__| |_| |___/\___\__|    ' -ForegroundColor DarkCyan
 Write-Host ''
 Write-Host '    +--------------------------------------------+' -ForegroundColor DarkGray
-Write-Host '    |  E X P R E S S   T R I A G E   v 1 . 0   |' -ForegroundColor White
+Write-Host '    |  E X P R E S S   T R I A G E   v 1 . 1   |' -ForegroundColor White
 Write-Host '    |  DFIR  //  Zero Dependencies  //  PS 5.1  |' -ForegroundColor Gray
 Write-Host '    +--------------------------------------------+' -ForegroundColor DarkGray
 Write-Host ''
-Write-Host "    [>] Target   : $hostname" -ForegroundColor Yellow
-Write-Host "    [>] User     : $($env:USERNAME)" -ForegroundColor Yellow
-Write-Host "    [>] Output   : $OutputDir" -ForegroundColor Yellow
-Write-Host "    [>] Started  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Yellow
+Write-Host "    [>] Target   : $hostname" -ForegroundColor Green
+Write-Host "    [>] User     : $($env:USERNAME)" -ForegroundColor Green
+Write-Host "    [>] Output   : $OutputDir" -ForegroundColor Green
+Write-Host "    [>] Started  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
 Write-Host ''
 Write-Host '    [!] Run as Administrator for full artifact coverage' -ForegroundColor Yellow
 Write-Host ''
@@ -475,8 +475,17 @@ Save-Csv "$triageRoot\Network\tcp_connections.csv" $netConns
 Save-Csv "$triageRoot\Network\tcp_established.csv" $established
 Save-Csv "$triageRoot\Network\tcp_listening.csv"   $listening
 
-$udpConns = Get-NetUDPEndpoint -EA SilentlyContinue |
-    Select-Object LocalAddress, LocalPort, OwningProcess
+$udpConns = Get-NetUDPEndpoint -EA SilentlyContinue | ForEach-Object {
+    $ep   = $_
+    $proc = $procData | Where-Object { $_.PID -eq $ep.OwningProcess } | Select-Object -First 1
+    [PSCustomObject]@{
+        LocalAddress = $ep.LocalAddress
+        LocalPort    = $ep.LocalPort
+        PID          = $ep.OwningProcess
+        ProcessName  = if ($proc) { $proc.Name } else { '' }
+        ProcessPath  = if ($proc) { $proc.Path } else { '' }
+    }
+}
 Save-Csv "$triageRoot\Network\udp_endpoints.csv" $udpConns
 
 $suspNetProcs = @('powershell','powershell_ise','cmd','wscript','cscript',
@@ -491,16 +500,92 @@ foreach ($c in ($external | Where-Object { $_.State -eq 'Established' })) {
 
 $namedPipes = [System.Collections.Generic.List[PSCustomObject]]::new()
 try {
-    $pipeDir = [System.IO.Directory]::GetFiles('\\.\pipe\')
-    foreach ($pipe in $pipeDir) {
-        $pipeName = Split-Path $pipe -Leaf
-        $isSusp   = $false
+    # Build PID->Path lookup from already-collected process data
+    $pidPathMap = @{}
+    foreach ($pd in $procData) {
+        if ($pd.PID -and $pd.Path) { $pidPathMap[[int]$pd.PID] = $pd.Path }
+    }
+
+    # Build process name lookup too (fallback when path not available)
+    $pidNameMap = @{}
+    foreach ($pd in $procData) {
+        if ($pd.PID) { $pidNameMap[[int]$pd.PID] = $pd.Name }
+    }
+
+    # Query pipe owners via WMI Win32_Pipe
+    # Win32_Pipe.Name format: "\\Device\NamedPipe\PipeName" or just "PipeName"
+    $wmiPipes = @{}
+    try {
+        Get-WmiObject -Namespace 'root\cimv2' -Query 'SELECT Name,ProcessId FROM Win32_Pipe' -EA Stop |
+            ForEach-Object {
+                $rawName = $_.Name
+                # Strip device path prefix if present: \Device\NamedPipe\ or \.\pipe\
+                $pn = $rawName -replace '^\\+Device\\+NamedPipe\\+', '' `
+                               -replace '^\\+\.\\+pipe\\+', '' `
+                               -replace '^.*\\', ''
+                $pn = $pn.Trim()
+                if ($pn -and -not $wmiPipes.ContainsKey($pn)) {
+                    $wmiPipes[$pn] = [int]$_.ProcessId
+                }
+            }
+    } catch {}
+
+    # Enumerate pipes - try GetFiles first, fall back to Get-ChildItem
+    $pipeNames = [System.Collections.Generic.List[string]]::new()
+    try {
+        $rawPaths = [System.IO.Directory]::GetFiles('\\.\pipe\')
+        foreach ($p in $rawPaths) {
+            # GetFiles returns full UNC path - extract leaf and skip empties
+            $leaf = $p -replace '^.*\\', ''
+            if ($leaf -and $leaf.Trim()) { $pipeNames.Add($leaf.Trim()) }
+        }
+    } catch {}
+
+    # Fallback: Get-ChildItem (works on some systems where GetFiles fails)
+    if ($pipeNames.Count -eq 0) {
+        try {
+            Get-ChildItem '\\.\pipe' -EA Stop | ForEach-Object {
+                if ($_.Name -and $_.Name.Trim()) { $pipeNames.Add($_.Name.Trim()) }
+            }
+        } catch {}
+    }
+
+    # Deduplicate
+    $pipeNames = $pipeNames | Sort-Object -Unique
+
+    foreach ($pipeName in $pipeNames) {
+        if ([string]::IsNullOrWhiteSpace($pipeName)) { continue }
+
+        $isSusp = $false
         foreach ($pat in $c2PipePatterns) {
             if ($pipeName -match $pat) { $isSusp = $true; break }
         }
-        $namedPipes.Add([PSCustomObject]@{ PipeName=$pipeName; FullPath=$pipe; Suspicious=$isSusp })
+
+        # Lookup owner PID from WMI map
+        $ownerPid = 0
+        if ($wmiPipes.ContainsKey($pipeName)) {
+            $ownerPid = $wmiPipes[$pipeName]
+        }
+
+        # Resolve process path and name
+        $ownerPath = ''
+        $ownerName = ''
+        if ($ownerPid -gt 0) {
+            if ($pidPathMap.ContainsKey($ownerPid)) { $ownerPath = $pidPathMap[$ownerPid] }
+            if ($pidNameMap.ContainsKey($ownerPid)) { $ownerName = $pidNameMap[$ownerPid] }
+            if (-not $ownerPath -and -not $ownerName) { $ownerName = "PID:$ownerPid" }
+        }
+
+        $namedPipes.Add([PSCustomObject]@{
+            PipeName    = $pipeName
+            OwnerPID    = if ($ownerPid -gt 0) { $ownerPid } else { '' }
+            ProcessName = $ownerName
+            ProcessPath = $ownerPath
+            Suspicious  = $isSusp
+        })
         if ($isSusp) {
-            Add-Highlight 'Network' 'CRITICAL' "Suspicious named pipe (C2 indicator): $pipeName" "Known C2 framework pipe pattern" 'T1071.001'
+            Add-Highlight 'Network' 'CRITICAL' "Suspicious named pipe (C2 indicator): $pipeName" `
+                "PID=$ownerPid Process=$ownerName Path=$ownerPath" 'T1071.001'
         }
     }
 } catch {}
@@ -715,7 +800,10 @@ $tasks = Get-ScheduledTask -EA SilentlyContinue | ForEach-Object {
         Suspicious  = $isSusp
     }
 }
-Save-Csv "$triageRoot\Persistence\scheduled_tasks.csv" $tasks
+try {
+    $taskCsv = "$triageRoot\Persistence\scheduled_tasks.csv"
+    $tasks | Export-Csv -Path $taskCsv -NoTypeInformation -Encoding ASCII -Force
+} catch { Save-Csv "$triageRoot\Persistence\scheduled_tasks.csv" $tasks }
 
 $services = Get-WmiObject Win32_Service | ForEach-Object {
     $svc  = $_
@@ -1182,12 +1270,13 @@ foreach ($fp in $fwProfiles) {
 }
 
 $fwInbound = Get-NetFirewallRule -EA SilentlyContinue |
-    Where-Object { $_.Enabled -eq $true -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' } |
+    Where-Object { $_.Enabled -eq $true -and $_.Direction -eq 'Inbound' } |
     Select-Object -First 200 | ForEach-Object {
         $r = $_
         $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r -EA SilentlyContinue
         [PSCustomObject]@{
             Name      = $r.DisplayName
+            Action    = $r.Action.ToString()
             Profile   = $r.Profile
             Protocol  = if ($portFilter) { $portFilter.Protocol } else { '' }
             LocalPort = if ($portFilter) { $portFilter.LocalPort } else { '' }
@@ -1197,12 +1286,13 @@ $fwInbound = Get-NetFirewallRule -EA SilentlyContinue |
 Save-Csv "$triageRoot\Config\firewall_rules_inbound.csv" $fwInbound
 
 $fwOutbound = Get-NetFirewallRule -EA SilentlyContinue |
-    Where-Object { $_.Enabled -eq $true -and $_.Direction -eq 'Outbound' -and $_.Action -eq 'Block' } |
+    Where-Object { $_.Enabled -eq $true -and $_.Direction -eq 'Outbound' } |
     Select-Object -First 200 | ForEach-Object {
         $r = $_
         $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r -EA SilentlyContinue
         [PSCustomObject]@{
             Name       = $r.DisplayName
+            Action     = $r.Action.ToString()
             Profile    = $r.Profile
             Protocol   = if ($portFilter) { $portFilter.Protocol } else { '' }
             RemotePort = if ($portFilter) { $portFilter.RemotePort } else { '' }
@@ -1520,38 +1610,8 @@ foreach ($up in $userProfiles2) {
         }
     }
 
-    # Raw SQLite DB copies
-    $rawDir = "$triageRoot\Forensics\Browser_$($up.UserName -replace '[^\w\-]','_')\RawDB"
-    $chromiumRawDefs = @(
-        @{ N='Chrome';  P="$($up.Local)\Google\Chrome\User Data\Default" }
-        @{ N='Edge';    P="$($up.Local)\Microsoft\Edge\User Data\Default" }
-        @{ N='Brave';   P="$($up.Local)\BraveSoftware\Brave-Browser\User Data\Default" }
-        @{ N='Yandex';  P="$($up.Local)\Yandex\YandexBrowser\User Data\Default" }
-        @{ N='Vivaldi'; P="$($up.Local)\Vivaldi\User Data\Default" }
-        @{ N='Opera';   P="$($up.Roaming)\Opera Software\Opera Stable" }
-    )
-    foreach ($cb in $chromiumRawDefs) {
-        if (-not (Test-Path $cb.P)) { continue }
-        foreach ($dbf in @('History','Cookies','Login Data','Web Data')) {
-            $src = "$($cb.P)\$dbf"
-            if (-not (Test-Path $src)) { continue }
-            $null = New-Item -ItemType Directory -Path $rawDir -Force
-            $dst  = "$rawDir\$($cb.N)_$($dbf -replace ' ','_')"
-            if (Copy-LockedFile $src $dst) { $rawDbCount++ }
-        }
-    }
-    $ffBase = "$($up.Roaming)\Mozilla\Firefox\Profiles"
-    if (Test-Path $ffBase) {
-        Get-ChildItem $ffBase -Directory -EA SilentlyContinue | Select-Object -First 3 | ForEach-Object {
-            $ffRawDir = "$rawDir\FF_$($_.Name)"
-            foreach ($dbf in @('places.sqlite','cookies.sqlite','logins.json')) {
-                $src = "$($_.FullName)\$dbf"
-                if (-not (Test-Path $src)) { continue }
-                $null = New-Item -ItemType Directory -Path $ffRawDir -Force
-                if (Copy-LockedFile $src "$ffRawDir\$dbf") { $rawDbCount++ }
-            }
-        }
-    }
+    # Raw SQLite DB copies disabled - CSV only output
+    # To enable raw DB copies, uncomment the block below and set $CopyBrowserRawDB = $true
 }
 
 if ($allBrowserRecords.Count -gt 0) {
@@ -1573,7 +1633,7 @@ if ($allBrowserRecords.Count -gt 0) {
     }
     Write-OK "browser_history_all.csv: $($allBrowserRecords.Count) records"
 }
-Write-OK "Browser total: $($allBrowserRecords.Count) records | Raw DB files: $rawDbCount"
+Write-OK "Browser total: $($allBrowserRecords.Count) records (CSV only)"
 
 # -------------------------------------------------------
 # 15. BITS JOBS
@@ -1662,8 +1722,8 @@ $manifestTotal = if ($manifest) {
 Save-Csv "$triageRoot\triage_manifest.csv" $manifest
 
 $meta = [ordered]@{
-    TriageVersion  = '1.0'
-    Tool           = 'ZavetSec Express Triage'
+    TriageVersion  = '1.1'
+    Tool           = 'ZavetSec Express Triage v1.1'
     Hostname       = $hostname
     CollectionTime = $global:StartTime.ToString('yyyy-MM-dd HH:mm:ss')
     Duration       = $duration
@@ -1686,12 +1746,495 @@ Write-OK "Files collected: $(($manifest | Measure-Object).Count) | Total: $manif
 Write-OK "Highlights: CRITICAL=$critHL HIGH=$highHL MEDIUM=$medHL Total=$totalHL"
 
 # -------------------------------------------------------
+# HTML REPORT
+# -------------------------------------------------------
+Write-Phase 'Generating HTML Triage Report'
+
+function ConvertTo-HtmlTable {
+    param($Data, [int]$MaxRows = 500)
+    if (-not $Data) { return '<p class="empty">No data</p>' }
+    $rows = @($Data)
+    if ($rows.Count -eq 0) { return '<p class="empty">No data</p>' }
+    $truncated = $rows.Count -gt $MaxRows
+    $rows = $rows | Select-Object -First $MaxRows
+    $headers = $rows[0].PSObject.Properties.Name
+    $sb = [System.Text.StringBuilder]::new()
+    $null = $sb.Append('<div class="tbl-wrap"><table>')
+    $null = $sb.Append('<thead><tr>')
+    foreach ($h in $headers) { $null = $sb.Append("<th>$h</th>") }
+    $null = $sb.Append('</tr></thead><tbody>')
+    foreach ($row in $rows) {
+        $null = $sb.Append('<tr>')
+        foreach ($h in $headers) {
+            $val = $row.$h
+            $cell = if ($null -eq $val) { '' } else { [System.Web.HttpUtility]::HtmlEncode($val.ToString()) }
+            $cls = ''
+            if ($h -in @('Suspicious','KnownThreat') -and $val -eq $true) { $cls = ' class="bad"' }
+            if ($h -eq 'Severity') {
+                $cls = switch ($val) { 'CRITICAL'{' class="crit"'} 'HIGH'{' class="high"'} 'MEDIUM'{' class="med"'} default{''} }
+            }
+            if ($h -eq 'Action') {
+                $cls = switch ($val) { 'Block'{' class="bad"'} 'Allow'{' class="ok"'} default{''} }
+            }
+            if ($h -eq 'IsExternal' -and $val -eq $true) { $cls = ' class="warn"' }
+            $null = $sb.Append("<td$cls>$cell</td>")
+        }
+        $null = $sb.Append('</tr>')
+    }
+    $null = $sb.Append('</tbody></table>')
+    if ($truncated) { $null = $sb.Append("<p class='trunc'>Showing first $MaxRows rows of $($rows.Count)+ records</p>") }
+    $null = $sb.Append('</div>')
+    return $sb.ToString()
+}
+
+Add-Type -AssemblyName System.Web -EA SilentlyContinue
+
+$riskColor = switch ($riskLevel) {
+    'CRITICAL' { '#ff2244' }
+    'HIGH'     { '#ff6600' }
+    'MEDIUM'   { '#ffaa00' }
+    default    { '#00ff88' }
+}
+
+# Build external connections list for report
+$extConns = $netConns | Where-Object { $_.IsExternal -and $_.State -eq 'Established' } |
+    Select-Object ProcessName, ProcessPath, LocalAddress, LocalPort, RemoteAddress, RemotePort, RemoteHost, PID
+
+# Collect system disk info
+$diskInfo = Get-WmiObject Win32_LogicalDisk -EA SilentlyContinue |
+    Where-Object { $_.DriveType -eq 3 } | ForEach-Object {
+        [PSCustomObject]@{
+            Drive    = $_.DeviceID
+            Label    = $_.VolumeName
+            TotalGB  = [Math]::Round($_.Size / 1GB, 1)
+            FreeGB   = [Math]::Round($_.FreeSpace / 1GB, 1)
+            UsedPct  = if ($_.Size -gt 0) { [Math]::Round(100 - ($_.FreeSpace / $_.Size * 100), 1) } else { 0 }
+        }
+    }
+
+# Suspicious processes for quick view
+$suspProcs = $procData | Where-Object { $_.Suspicious } |
+    Select-Object PID, PPID, Name, Path, SuspReason, Mitre, SHA256, Signature
+
+# Top highlights
+$topHL = $global:Highlights | Sort-Object @{E={switch($_.Severity){'CRITICAL'{0}'HIGH'{1}'MEDIUM'{2}default{3}}}} |
+    Select-Object -First 50
+
+# Network summary stats
+$extEstab  = ($netConns | Where-Object { $_.IsExternal -and $_.State -eq 'Established' }).Count
+$listenCnt = ($netConns | Where-Object { $_.State -eq 'Listen' }).Count
+$udpCnt    = if ($udpConns) { @($udpConns).Count } else { 0 }
+
+
+# MITRE ATT&CK techniques seen
+$mitreList = $global:Highlights | Where-Object { $_.Mitre } |
+    Group-Object Mitre | Sort-Object Count -Descending | ForEach-Object {
+        [PSCustomObject]@{ Technique=$_.Name; Count=$_.Count; Examples=(($_.Group | Select-Object -First 2 | ForEach-Object {$_.Description}) -join ' | ') }
+    }
+
+# Build HTML highlight badges
+$hlBadges = ($global:Highlights | Group-Object Category | Sort-Object Name | ForEach-Object {
+    $cat   = $_.Name
+    $cCrit = ($_.Group | Where-Object {$_.Severity -eq 'CRITICAL'}).Count
+    $cHigh = ($_.Group | Where-Object {$_.Severity -eq 'HIGH'}).Count
+    $cMed  = ($_.Group | Where-Object {$_.Severity -eq 'MEDIUM'}).Count
+    "<div class='cat-badge'><span class='cat-name'>$cat</span>" +
+    $(if($cCrit -gt 0){"<span class='sev-crit'>CRIT:$cCrit</span>"}else{''}) +
+    $(if($cHigh -gt 0){"<span class='sev-high'>HIGH:$cHigh</span>"}else{''}) +
+    $(if($cMed  -gt 0){"<span class='sev-med'>MED:$cMed</span>"}else{''}) +
+    "</div>"
+}) -join "`n"
+
+# Browser history top domains
+$topDomains = if ($allBrowserRecords.Count -gt 0) {
+    $allBrowserRecords | Where-Object { $_.Domain -and $_.Domain -ne 'unknown' } |
+        Group-Object Domain | Sort-Object Count -Descending | Select-Object -First 20 |
+        ForEach-Object { [PSCustomObject]@{ Domain=$_.Name; Visits=$_.Count } }
+} else { $null }
+
+$htmlCollectionTime = $global:StartTime.ToString('yyyy-MM-dd HH:mm:ss')
+$htmlNow            = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+
+# Disk bar helper
+function Get-DiskBar {
+    param([double]$Pct)
+    $color = if ($Pct -gt 90) { '#ff2244' } elseif ($Pct -gt 70) { '#ffaa00' } else { '#00c875' }
+    "<div class='disk-bar-bg'><div class='disk-bar-fill' style='width:$([Math]::Round($Pct,0))%;background:$color'></div><span class='disk-pct'>$Pct%</span></div>"
+}
+
+$diskRows = if ($diskInfo) {
+    ($diskInfo | ForEach-Object {
+        "<tr><td>$($_.Drive)</td><td>$($_.Label)</td><td>$($_.TotalGB) GB</td><td>$($_.FreeGB) GB</td><td>$(Get-DiskBar $_.UsedPct)</td></tr>"
+    }) -join ''
+} else { '<tr><td colspan="5" class="empty">No disk info</td></tr>' }
+
+$html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Triage Report - $hostname</title>
+<style>
+:root {
+  --bg:        #0a0c10;
+  --bg2:       #0f1117;
+  --bg3:       #161b22;
+  --bg4:       #1c2230;
+  --border:    #21262d;
+  --border2:   #30363d;
+  --accent:    #00c8ff;
+  --accent2:   #0066ff;
+  --green:     #00ff88;
+  --red:       #ff2244;
+  --orange:    #ff6600;
+  --yellow:    #ffaa00;
+  --purple:    #bf00ff;
+  --text:      #c9d1d9;
+  --text2:     #8b949e;
+  --text3:     #6e7681;
+  --font:      'Consolas','Courier New',monospace;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:var(--font); font-size:13px; line-height:1.5; }
+a { color:var(--accent); text-decoration:none; }
+
+/* HEADER */
+.header { background:linear-gradient(135deg,#0a0c10 0%,#0f1825 50%,#0a0c10 100%);
+  border-bottom:2px solid var(--accent); padding:28px 32px 20px; position:relative; overflow:hidden; }
+.header::before { content:''; position:absolute; top:0;left:0;right:0;bottom:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,200,255,.015) 2px,rgba(0,200,255,.015) 4px); pointer-events:none; }
+.header-grid { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px; position:relative; }
+.header-title { }
+.header-title h1 { font-size:22px; color:var(--accent); letter-spacing:3px; text-transform:uppercase; }
+.header-title .sub { color:var(--text2); font-size:11px; letter-spacing:2px; margin-top:4px; }
+.risk-badge { padding:10px 20px; border:2px solid $riskColor; color:$riskColor;
+  font-size:18px; font-weight:bold; letter-spacing:4px; text-shadow:0 0 12px ${riskColor}88;
+  box-shadow:0 0 16px ${riskColor}33; }
+.header-meta { display:flex; gap:32px; flex-wrap:wrap; margin-top:12px; }
+.meta-item { color:var(--text2); font-size:11px; }
+.meta-item span { color:var(--text); }
+
+/* RISK SUMMARY CARDS */
+.summary-strip { display:flex; gap:12px; padding:16px 32px; background:var(--bg2);
+  border-bottom:1px solid var(--border); flex-wrap:wrap; }
+.scard { flex:1; min-width:130px; background:var(--bg3); border:1px solid var(--border);
+  padding:12px 16px; border-radius:4px; }
+.scard .sc-val { font-size:26px; font-weight:bold; line-height:1; }
+.scard .sc-lbl { color:var(--text3); font-size:10px; letter-spacing:1px; text-transform:uppercase; margin-top:4px; }
+.scard.crit { border-color:var(--red);    box-shadow:0 0 8px #ff224422; }
+.scard.high { border-color:var(--orange); box-shadow:0 0 8px #ff660022; }
+.scard.med  { border-color:var(--yellow); box-shadow:0 0 8px #ffaa0022; }
+.scard.info { border-color:var(--accent); box-shadow:0 0 8px #00c8ff22; }
+.scard.crit .sc-val { color:var(--red); }
+.scard.high .sc-val { color:var(--orange); }
+.scard.med  .sc-val { color:var(--yellow); }
+.scard.info .sc-val { color:var(--accent); }
+
+/* NAV */
+.nav { background:var(--bg2); border-bottom:1px solid var(--border);
+  padding:0 32px; display:flex; gap:0; overflow-x:auto; }
+.nav a { color:var(--text2); padding:10px 16px; font-size:11px; letter-spacing:1px;
+  text-transform:uppercase; border-bottom:2px solid transparent; white-space:nowrap;
+  transition:color .15s,border-color .15s; }
+.nav a:hover { color:var(--accent); border-color:var(--accent); }
+
+/* LAYOUT */
+.main { max-width:1600px; margin:0 auto; padding:24px 32px 48px; }
+.section { margin-bottom:32px; }
+.section-hdr { display:flex; align-items:center; gap:10px; margin-bottom:12px;
+  padding-bottom:8px; border-bottom:1px solid var(--border); }
+.section-hdr h2 { font-size:13px; letter-spacing:2px; text-transform:uppercase; color:var(--accent); }
+.section-hdr .badge { background:var(--bg4); color:var(--text2); font-size:10px;
+  padding:2px 8px; border-radius:2px; border:1px solid var(--border2); }
+
+/* SYSINFO GRID */
+.sysinfo-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:10px; }
+.si-item { background:var(--bg3); border:1px solid var(--border); padding:10px 14px; border-radius:3px; }
+.si-key { color:var(--text3); font-size:10px; letter-spacing:1px; text-transform:uppercase; }
+.si-val { color:var(--text); margin-top:2px; word-break:break-all; }
+
+/* HIGHLIGHT CATEGORIES */
+.cat-grid { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+.cat-badge { background:var(--bg3); border:1px solid var(--border2); padding:6px 10px;
+  border-radius:3px; display:flex; align-items:center; gap:6px; font-size:11px; }
+.cat-name { color:var(--text2); }
+.sev-crit { background:#ff224433; color:var(--red);    padding:1px 6px; border-radius:2px; font-size:10px; font-weight:bold; }
+.sev-high { background:#ff660033; color:var(--orange); padding:1px 6px; border-radius:2px; font-size:10px; font-weight:bold; }
+.sev-med  { background:#ffaa0033; color:var(--yellow); padding:1px 6px; border-radius:2px; font-size:10px; font-weight:bold; }
+
+/* TABLES */
+.tbl-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+thead tr { background:var(--bg4); }
+th { padding:7px 10px; text-align:left; color:var(--text2); font-size:10px;
+  letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid var(--border2);
+  white-space:nowrap; }
+td { padding:5px 10px; border-bottom:1px solid var(--border); color:var(--text);
+  max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+tr:hover td { background:var(--bg4); }
+td.bad  { color:var(--red);    background:#ff224418; }
+td.crit { color:var(--red);    background:#ff224418; font-weight:bold; }
+td.high { color:var(--orange); background:#ff660018; font-weight:bold; }
+td.med  { color:var(--yellow); background:#ffaa0018; }
+td.ok   { color:var(--green);  background:#00ff8818; }
+td.warn { color:var(--yellow); }
+.empty  { color:var(--text3); font-style:italic; padding:8px 0; }
+.trunc  { color:var(--text3); font-size:10px; padding:6px 0; }
+
+/* DISK TABLE */
+.disk-bar-bg { background:var(--bg4); border-radius:2px; height:14px; position:relative;
+  min-width:120px; overflow:hidden; }
+.disk-bar-fill { position:absolute; top:0; left:0; height:100%; border-radius:2px; transition:width .3s; }
+.disk-pct { position:absolute; right:4px; top:0; font-size:10px; line-height:14px; color:#fff; mix-blend-mode:difference; }
+
+/* MITRE GRID */
+.mitre-grid { display:flex; flex-wrap:wrap; gap:8px; }
+.mitre-tag { background:var(--bg4); border:1px solid var(--purple); color:var(--purple);
+  padding:4px 10px; border-radius:3px; font-size:11px; box-shadow:0 0 6px #bf00ff22; }
+.mitre-tag .mitre-cnt { color:var(--text2); margin-left:4px; font-size:10px; }
+
+/* NEXT STEPS */
+.steps { list-style:none; counter-reset:steps; }
+.steps li { counter-increment:steps; padding:8px 0 8px 36px; position:relative;
+  border-bottom:1px solid var(--border); color:var(--text); }
+.steps li::before { content:counter(steps,'0'counter(steps)); position:absolute; left:0;
+  color:var(--accent); font-weight:bold; font-size:11px; background:var(--bg3);
+  width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--accent); border-radius:2px; top:7px; }
+.steps li .cmd { display:inline-block; background:var(--bg4); color:var(--green);
+  padding:2px 8px; border-radius:2px; font-size:11px; margin-top:2px; }
+
+/* TABS */
+.tabs { display:flex; gap:0; border-bottom:1px solid var(--border); margin-bottom:0; }
+.tab-btn { background:transparent; border:none; color:var(--text2); padding:8px 16px;
+  cursor:pointer; font-family:var(--font); font-size:11px; letter-spacing:1px;
+  text-transform:uppercase; border-bottom:2px solid transparent; transition:all .15s; }
+.tab-btn.active { color:var(--accent); border-color:var(--accent); }
+.tab-btn:hover { color:var(--text); }
+.tab-pane { display:none; padding-top:12px; }
+.tab-pane.active { display:block; }
+
+/* FOOTER */
+.footer { border-top:1px solid var(--border); padding:16px 32px; color:var(--text3);
+  font-size:11px; display:flex; justify-content:space-between; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-grid">
+    <div class="header-title">
+      <h1>&#9670; Triage Report</h1>
+      <div class="sub">ZavetSec Express Triage v1.1 &nbsp;//&nbsp; DFIR &nbsp;//&nbsp; Zero Dependencies</div>
+    </div>
+    <div class="risk-badge">$riskLevel</div>
+  </div>
+  <div class="header-meta">
+    <div class="meta-item">HOST &nbsp;<span>$hostname</span></div>
+    <div class="meta-item">OS &nbsp;<span>$($sysInfo.OS)</span></div>
+    <div class="meta-item">BUILD &nbsp;<span>$($sysInfo.OSBuild)</span></div>
+    <div class="meta-item">DOMAIN &nbsp;<span>$($sysInfo.Domain)</span></div>
+    <div class="meta-item">COLLECTED &nbsp;<span>$htmlCollectionTime</span></div>
+    <div class="meta-item">DURATION &nbsp;<span>$duration</span></div>
+    <div class="meta-item">ADMIN &nbsp;<span>$isAdmin</span></div>
+    <div class="meta-item">OPERATOR &nbsp;<span>$($sysInfo.CollectedBy)</span></div>
+  </div>
+</div>
+
+<div class="summary-strip">
+  <div class="scard crit"><div class="sc-val">$critHL</div><div class="sc-lbl">Critical</div></div>
+  <div class="scard high"><div class="sc-val">$highHL</div><div class="sc-lbl">High</div></div>
+  <div class="scard med"><div class="sc-val">$medHL</div><div class="sc-lbl">Medium</div></div>
+  <div class="scard info"><div class="sc-val">$totalHL</div><div class="sc-lbl">Total Findings</div></div>
+  <div class="scard info"><div class="sc-val">$($procData.Count)</div><div class="sc-lbl">Processes</div></div>
+  <div class="scard info"><div class="sc-val">$extEstab</div><div class="sc-lbl">Ext Connections</div></div>
+  <div class="scard info"><div class="sc-val">$(($manifest | Measure-Object).Count)</div><div class="sc-lbl">Files Collected</div></div>
+  <div class="scard info"><div class="sc-val">$manifestTotal MB</div><div class="sc-lbl">Total Size</div></div>
+</div>
+
+<nav class="nav">
+  <a href="#highlights">Findings</a>
+  <a href="#sysinfo">System</a>
+  <a href="#processes">Processes</a>
+  <a href="#network">Network</a>
+  <a href="#persistence">Persistence</a>
+  <a href="#mitre">MITRE</a>
+  <a href="#nextsteps">Next Steps</a>
+</nav>
+
+<div class="main">
+
+<!-- FINDINGS -->
+<div class="section" id="highlights">
+  <div class="section-hdr">
+    <h2>&#9632; Threat Findings</h2>
+    <span class="badge">$totalHL total</span>
+  </div>
+  <div class="cat-grid">
+$hlBadges
+  </div>
+  $(ConvertTo-HtmlTable $topHL 50)
+</div>
+
+<!-- SYSTEM INFO -->
+<div class="section" id="sysinfo">
+  <div class="section-hdr"><h2>&#9632; System Information</h2></div>
+  <div class="sysinfo-grid">
+    <div class="si-item"><div class="si-key">Hostname</div><div class="si-val">$hostname</div></div>
+    <div class="si-item"><div class="si-key">Operating System</div><div class="si-val">$($sysInfo.OS)</div></div>
+    <div class="si-item"><div class="si-key">OS Version / Build</div><div class="si-val">$($sysInfo.OSVersion) / $($sysInfo.OSBuild)</div></div>
+    <div class="si-item"><div class="si-key">Architecture</div><div class="si-val">$($sysInfo.Architecture)</div></div>
+    <div class="si-item"><div class="si-key">Domain</div><div class="si-val">$($sysInfo.Domain) (joined: $($sysInfo.PartOfDomain))</div></div>
+    <div class="si-item"><div class="si-key">Last Boot</div><div class="si-val">$($sysInfo.LastBootTime) ($($sysInfo.UptimeHours)h uptime)</div></div>
+    <div class="si-item"><div class="si-key">RAM</div><div class="si-val">$($sysInfo.TotalRAM_GB) GB</div></div>
+    <div class="si-item"><div class="si-key">Logical CPUs</div><div class="si-val">$($sysInfo.LogicalCPUs)</div></div>
+    <div class="si-item"><div class="si-key">Time Zone</div><div class="si-val">$($sysInfo.TimeZone)</div></div>
+    <div class="si-item"><div class="si-key">PowerShell Version</div><div class="si-val">$($sysInfo.PSVersion)</div></div>
+    <div class="si-item"><div class="si-key">Run As Admin</div><div class="si-val">$isAdmin</div></div>
+    <div class="si-item"><div class="si-key">Collection Time</div><div class="si-val">$htmlCollectionTime</div></div>
+  </div>
+  <br>
+  <table>
+    <thead><tr><th>Drive</th><th>Label</th><th>Total</th><th>Free</th><th>Used</th></tr></thead>
+    <tbody>$diskRows</tbody>
+  </table>
+</div>
+
+<!-- PROCESSES -->
+<div class="section" id="processes">
+  <div class="section-hdr">
+    <h2>&#9632; Processes</h2>
+    <span class="badge">$($procData.Count) total / $($suspProcs.Count) suspicious</span>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab(this,'susp-procs')">Suspicious</button>
+    <button class="tab-btn" onclick="showTab(this,'all-procs')">All Processes</button>
+  </div>
+  <div id="susp-procs" class="tab-pane active">
+    $(if ($suspProcs.Count -gt 0) { ConvertTo-HtmlTable $suspProcs 100 } else { '<p class="empty">No suspicious processes detected</p>' })
+  </div>
+  <div id="all-procs" class="tab-pane">
+    $(ConvertTo-HtmlTable ($procData | Select-Object PID,PPID,Name,Path,Owner,WorkingSetMB,Suspicious,Mitre) 300)
+  </div>
+</div>
+
+<!-- NETWORK -->
+<div class="section" id="network">
+  <div class="section-hdr">
+    <h2>&#9632; Network</h2>
+    <span class="badge">estab: $($established.Count) / listen: $listenCnt / ext: $extEstab / udp: $udpCnt</span>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab(this,'net-ext')">External Connections</button>
+    <button class="tab-btn" onclick="showTab(this,'net-all')">All TCP</button>
+    <button class="tab-btn" onclick="showTab(this,'net-listen')">Listening</button>
+    <button class="tab-btn" onclick="showTab(this,'net-pipes')">Named Pipes</button>
+  </div>
+  <div id="net-ext" class="tab-pane active">
+    $(if ($extConns.Count -gt 0) { ConvertTo-HtmlTable $extConns 200 } else { '<p class="empty">No established external connections</p>' })
+  </div>
+  <div id="net-all" class="tab-pane">
+    $(ConvertTo-HtmlTable ($netConns | Select-Object State,LocalAddress,LocalPort,RemoteAddress,RemotePort,RemoteHost,ProcessName,ProcessPath,IsExternal) 300)
+  </div>
+  <div id="net-listen" class="tab-pane">
+    $(ConvertTo-HtmlTable ($listening | Select-Object LocalAddress,LocalPort,ProcessName,ProcessPath,PID) 200)
+  </div>
+  <div id="net-pipes" class="tab-pane">
+    $(ConvertTo-HtmlTable ($namedPipes | Select-Object PipeName,OwnerPID,ProcessName,ProcessPath,Suspicious) 300)
+  </div>
+</div>
+
+<!-- PERSISTENCE -->
+<div class="section" id="persistence">
+  <div class="section-hdr">
+    <h2>&#9632; Persistence</h2>
+    <span class="badge">autoruns: $($persistItems.Count) / tasks: $($tasks.Count) / services: $($services.Count)</span>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab(this,'pers-auto')">Autoruns</button>
+    <button class="tab-btn" onclick="showTab(this,'pers-tasks')">Scheduled Tasks</button>
+    <button class="tab-btn" onclick="showTab(this,'pers-svc')">Services</button>
+  </div>
+  <div id="pers-auto" class="tab-pane active">
+    $(ConvertTo-HtmlTable ($persistItems | Select-Object Source,Location,Name,Value,Suspicious) 200)
+  </div>
+  <div id="pers-tasks" class="tab-pane">
+    $(ConvertTo-HtmlTable ($tasks | Select-Object TaskName,TaskPath,State,Author,Action,Suspicious) 200)
+  </div>
+  <div id="pers-svc" class="tab-pane">
+    $(ConvertTo-HtmlTable ($services | Where-Object {$_.Suspicious -or $_.State -eq 'Running'} | Select-Object Name,DisplayName,State,StartMode,PathName,StartName,Suspicious) 200)
+  </div>
+</div>
+
+
+<!-- MITRE ATT&CK -->
+<div class="section" id="mitre">
+  <div class="section-hdr">
+    <h2>&#9632; MITRE ATT&amp;CK Techniques</h2>
+    <span class="badge">$($mitreList.Count) techniques</span>
+  </div>
+  <div class="mitre-grid">
+$(($mitreList | ForEach-Object { "    <div class='mitre-tag'><a href='https://attack.mitre.org/techniques/$($_.Technique -replace '\.','/') ' target='_blank'>$($_.Technique)</a><span class='mitre-cnt'>x$($_.Count)</span></div>" }) -join "`n")
+  </div>
+  <br>
+  $(ConvertTo-HtmlTable $mitreList 50)
+</div>
+
+
+<!-- NEXT STEPS -->
+<div class="section" id="nextsteps">
+  <div class="section-hdr"><h2>&#9632; Recommended Next Steps</h2></div>
+  <ol class="steps">
+    <li>Review <strong>Forensics\triage_highlights.csv</strong> - sort by Severity column, focus CRITICAL/HIGH first</li>
+    <li>Filter suspicious processes: <span class="cmd">Processes\processes.csv</span> - column Suspicious=True</li>
+    <li>Examine external connections: <span class="cmd">Network\tcp_connections.csv</span> - column IsExternal=True</li>
+    <li>Check browser history for C2/exfil domains: <span class="cmd">Forensics\browser_history_all.csv</span></li>
+    <li>Review persistence mechanisms: <span class="cmd">Persistence\autoruns.csv</span> + <span class="cmd">scheduled_tasks.csv</span></li>
+    <li>Run Sigma rules against collected EVTX: <span class="cmd">chainsaw hunt Logs\ --sigma rules\ --mapping mapping.yml</span></li>
+    <li>Run Hayabusa timeline: <span class="cmd">hayabusa csv-timeline -d Logs\ -o timeline.csv</span></li>
+    <li>Check firewall rules for unexpected Allow entries: <span class="cmd">Config\firewall_rules_inbound.csv</span></li>
+    <li>Verify no shadow copies were deleted (T1490): <span class="cmd">Forensics\shadow_copies.csv</span></li>
+    <li>If Tor Browser or tunneling tools found - isolate host immediately</li>
+  </ol>
+</div>
+
+</div><!-- /main -->
+
+<div class="footer">
+  <span>ZavetSec Express Triage v1.1 &nbsp;|&nbsp; Host: $hostname &nbsp;|&nbsp; Collected: $htmlCollectionTime</span>
+  <span>Report generated: $htmlNow &nbsp;|&nbsp; <a href="https://github.com/zavetsec/" target="_blank" style="color:var(--accent);opacity:.7;">github.com/zavetsec</a></span>
+</div>
+
+<script>
+function showTab(btn, id) {
+  var section = btn.closest('.section');
+  section.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
+  section.querySelectorAll('.tab-pane').forEach(function(p){ p.classList.remove('active'); });
+  btn.classList.add('active');
+  var pane = document.getElementById(id);
+  if (pane) pane.classList.add('active');
+}
+</script>
+</body>
+</html>
+"@
+
+$reportPath = "$triageRoot\triage_report.html"
+try {
+    [System.IO.File]::WriteAllText($reportPath, $html, [System.Text.Encoding]::UTF8)
+    Write-OK "HTML report: triage_report.html"
+} catch {
+    Write-Warn "HTML report failed: $_"
+}
+
+# -------------------------------------------------------
 # ZIP PACKAGING
 # -------------------------------------------------------
 Write-Phase 'Packaging ZIP'
 $global:PhaseCount-- # packaging is not a real phase in the 17-count
 
-$zipName = "ZavetSec_${hostname}_${timestamp}.zip"
+$zipName = "${hostname}_${timestamp}.zip"
 $zipPath = Join-Path $OutputDir $zipName
 
 try {
@@ -1716,12 +2259,12 @@ Write-Host '    +---------------------------------------------------+' -Foregrou
 Write-Host '    |        C O L L E C T I O N   D O N E            |' -ForegroundColor Cyan
 Write-Host '    +---------------------------------------------------+' -ForegroundColor DarkCyan
 Write-Host ''
-Write-Host "    [>] Host      : $hostname"   -ForegroundColor Gray
-Write-Host "    [>] Mode      : $Mode"       -ForegroundColor $(if($Mode -eq 'LITE'){'Cyan'}else{'Yellow'})
-Write-Host "    [>] Admin     : $isAdmin"    -ForegroundColor $(if($isAdmin){'Yellow'}else{'Red'})
-Write-Host "    [>] Duration  : $duration"   -ForegroundColor Gray
-Write-Host "    [>] ZIP       : $zipPath"    -ForegroundColor Cyan
-Write-Host "    [>] Size      : $zipMB MB"   -ForegroundColor DarkGray
+Write-Host "    [>] Host      : $hostname"   -ForegroundColor Green
+Write-Host "    [>] Mode      : $Mode"       -ForegroundColor $(if($Mode -eq 'LITE'){'Cyan'}else{'Green'})
+Write-Host "    [>] Admin     : $isAdmin"    -ForegroundColor $(if($isAdmin){'Green'}else{'Red'})
+Write-Host "    [>] Duration  : $duration"   -ForegroundColor Green
+Write-Host "    [>] ZIP       : $zipPath"    -ForegroundColor Green
+Write-Host "    [>] Size      : $zipMB MB"   -ForegroundColor Green
 Write-Host ''
 Write-Host "    [!] CRITICAL  : $critHL"     -ForegroundColor $(if($critHL -gt 0){'Red'}else{'Yellow'})
 Write-Host "    [!] HIGH      : $highHL"     -ForegroundColor $(if($highHL -gt 0){'Red'}else{'Yellow'})

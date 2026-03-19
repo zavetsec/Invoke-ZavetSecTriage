@@ -19,6 +19,11 @@
 
 ---
 
+
+> **TL;DR** — Drop the script on a Windows host, run as Administrator, get a ZIP with 18 artifact categories and an HTML triage report in under 5 minutes. No setup. No internet. No dependencies.
+
+---
+
 ## Why this tool
 
 Most triage solutions require installing agents, deploying binaries, configuring databases, or maintaining infrastructure. When you are responding to an incident on a live Windows system at 2 AM, none of that is available.
@@ -209,6 +214,8 @@ This section is for **blue teams** evaluating the tool and for **operators** who
 ---
 
 ## HTML report preview
+
+> **Screenshot:** run the script on any Windows host and open `triage_report.html` from the output ZIP — the report renders entirely offline. A demo GIF is planned for the next release.
 
 The HTML report is a self-contained single file — no server, no external resources, opens in any browser on an isolated analyst workstation.
 
@@ -401,6 +408,15 @@ Findings are automatically tagged with technique IDs and surfaced in both `triag
 
 ### v1.0
 - Initial release — 17 collection modules
+
+---
+
+### Release notes
+
+- **Versioning:** `MAJOR.MINOR` — minor versions add modules or enrich existing output columns, major versions indicate breaking changes to archive structure or folder layout
+- **Backward compatibility:** CSV column names and folder structure are kept stable within a major version — scripts or SIEM pipelines parsing the output will not break on minor updates
+- **PS 5.1 guarantee:** every release is tested on PowerShell 5.1. No features requiring PS 7+ will be introduced without a fallback path
+- **Zero-dependency guarantee:** the core script will never require external binaries to produce output. Optional enhancements (sqlite3.exe) remain strictly opt-in
 
 ---
 

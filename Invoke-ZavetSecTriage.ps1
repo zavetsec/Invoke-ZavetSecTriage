@@ -1746,6 +1746,70 @@ Write-OK "Files collected: $(($manifest | Measure-Object).Count) | Total: $manif
 Write-OK "Highlights: CRITICAL=$critHL HIGH=$highHL MEDIUM=$medHL Total=$totalHL"
 
 # -------------------------------------------------------
+# HASH EXPORT
+# -------------------------------------------------------
+# Consolidate all SHA256 hashes from processes and services into two files:
+#   hashes.txt   - plain list of unique hashes (one per line) for bulk VT / MISP lookup
+#   hashes.csv   - SHA256, FileName, FilePath, Source, Suspicious for analyst review
+
+$hashMap = [System.Collections.Generic.Dictionary[string,PSCustomObject]]::new()
+
+# Source 1: running processes
+foreach ($p in $procData) {
+    if ($p.SHA256 -and $p.SHA256 -ne 'N/A' -and $p.SHA256.Length -eq 64) {
+        if (-not $hashMap.ContainsKey($p.SHA256)) {
+            $hashMap[$p.SHA256] = [PSCustomObject]@{
+                SHA256     = $p.SHA256
+                FileName   = $p.Name
+                FilePath   = $p.Path
+                Source     = 'Process'
+                Suspicious = $p.Suspicious
+            }
+        } elseif ($p.Suspicious -and -not $hashMap[$p.SHA256].Suspicious) {
+            # Promote to suspicious if any instance is flagged
+            $hashMap[$p.SHA256] = [PSCustomObject]@{
+                SHA256     = $p.SHA256
+                FileName   = $p.Name
+                FilePath   = $p.Path
+                Source     = 'Process'
+                Suspicious = $true
+            }
+        }
+    }
+}
+
+# Source 2: services
+foreach ($svc in $services) {
+    if ($svc.SHA256 -and $svc.SHA256 -ne 'N/A' -and $svc.SHA256.Length -eq 64) {
+        if (-not $hashMap.ContainsKey($svc.SHA256)) {
+            $hashMap[$svc.SHA256] = [PSCustomObject]@{
+                SHA256     = $svc.SHA256
+                FileName   = Split-Path $svc.PathName -Leaf -EA SilentlyContinue
+                FilePath   = $svc.PathName
+                Source     = 'Service'
+                Suspicious = $svc.Suspicious
+            }
+        }
+    }
+}
+
+if ($hashMap.Count -gt 0) {
+    # Plain list - one hash per line, deduplicated, sorted
+    $plainList = ($hashMap.Keys | Sort-Object) -join "`n"
+    [System.IO.File]::WriteAllText("$triageRoot\Forensics\hashes.txt", $plainList, [System.Text.Encoding]::ASCII)
+
+    # CSV with context
+    $hashMap.Values |
+        Sort-Object @{E={switch($_.Suspicious){$true{0}default{1}}}}, SHA256 |
+        Export-Csv -Path "$triageRoot\Forensics\hashes.csv" -NoTypeInformation -Encoding ASCII -Force
+
+    $suspHashes = ($hashMap.Values | Where-Object { $_.Suspicious }).Count
+    Write-OK "Hash export: $($hashMap.Count) unique hashes | Suspicious=$suspHashes -> Forensics\hashes.txt + hashes.csv"
+} else {
+    Write-Info "Hash export: no valid SHA256 hashes collected"
+}
+
+# -------------------------------------------------------
 # HTML REPORT
 # -------------------------------------------------------
 Write-Phase 'Generating HTML Triage Report'

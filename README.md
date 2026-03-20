@@ -288,7 +288,7 @@ Each finding links to the relevant source file in the archive. MITRE technique I
 | 14 | Browser History | `Forensics\browser_history_all.csv` | 16 browsers, all user profiles. With `sqlite3.exe`: titles + visit counts + timestamps. Without: URL regex fallback |
 | 15 | BITS Jobs | `Forensics\bits_jobs.csv` | Non-Microsoft download URLs to Temp/AppData auto-flagged as HIGH (T1197) |
 | 16 | Clipboard | `Forensics\clipboard.txt` | Credential pattern detection (passwords, tokens, API keys, SSH/AWS keys) |
-| 17 | Metadata & Summary | `triage_metadata.json`, `Forensics\triage_highlights.csv` | All findings with severity and MITRE IDs. Risk level: LOW / MEDIUM / HIGH / CRITICAL |
+| 17 | Metadata & Summary | `triage_metadata.json`, `Forensics\triage_highlights.csv`, `Forensics\hashes.txt`, `Forensics\hashes.csv` | All findings with severity and MITRE IDs. Risk level: LOW / MEDIUM / HIGH / CRITICAL. Deduplicated SHA256 list from processes and services for bulk VT / MISP lookup |
 | 18 | HTML Report | `triage_report.html` | Interactive single-file report. Tabbed views. Opens in any browser |
 
 ---
@@ -352,6 +352,8 @@ HOSTNAME_20260319_091103.zip
 │   └── *.evtx                      ← full raw copies for Chainsaw / Hayabusa
 ├── Forensics\
 │   ├── triage_highlights.csv       ← all findings, sort by Severity
+│   ├── hashes.txt                  ← unique SHA256 list (processes + services)
+│   ├── hashes.csv                  ← SHA256 + FileName + FilePath + Source + Suspicious
 │   ├── prefetch.csv
 │   ├── browser_history_all.csv
 │   ├── shadow_copies.csv
@@ -377,13 +379,14 @@ HOSTNAME_20260319_091103.zip
 1. triage_report.html                     → open in browser for immediate visual overview
 2. Forensics\triage_highlights.csv        → sort Severity DESC — start at CRITICAL
 3. Processes\processes.csv                → filter Suspicious = True, check SHA256 on VT
-4. Network\tcp_connections.csv            → filter IsExternal = True, State = Established
-5. Persistence\autoruns.csv               → look for unknown entries in Temp / AppData
-6. Persistence\scheduled_tasks.csv        → check non-Microsoft task paths and authors
-7. Logs\ (Chainsaw or Hayabusa)           → Sigma rule scan against raw EVTX
-8. Config\firewall_rules_inbound.csv      → filter Action = Allow, unexpected programs
-9. Forensics\shadow_copies.csv            → empty = possible ransomware (T1490)
-10. Forensics\prefetch.csv                → filter KnownThreat = True
+4. Forensics\hashes.txt                   → bulk SHA256 lookup: paste into VirusTotal / MISP / bulk checker
+5. Network\tcp_connections.csv            → filter IsExternal = True, State = Established
+6. Persistence\autoruns.csv               → look for unknown entries in Temp / AppData
+7. Persistence\scheduled_tasks.csv        → check non-Microsoft task paths and authors
+8. Logs\ (Chainsaw or Hayabusa)           → Sigma rule scan against raw EVTX
+9. Config\firewall_rules_inbound.csv      → filter Action = Allow, unexpected programs
+10. Forensics\shadow_copies.csv           → empty = possible ransomware (T1490)
+11. Forensics\prefetch.csv                → filter KnownThreat = True
 ```
 
 Batch EVTX analysis:
@@ -432,6 +435,7 @@ Findings are automatically tagged with technique IDs and surfaced in both `triag
 - Scheduled tasks: fixed UTF-8 BOM artifact (`п»ї`) in Excel on Russian Windows locale
 - Archive naming: `<hostname>_<timestamp>.zip` (removed `ZavetSec_` prefix)
 - Console output: `[+]` success lines green, `[!]` warning lines yellow, `[-]` info lines gray
+- Hash export: `Forensics\hashes.txt` (plain SHA256 list for bulk lookup) and `Forensics\hashes.csv` (with FileName, FilePath, Source, Suspicious) — deduplicated across processes and services
 
 ### v1.0
 - Initial release — 17 collection modules

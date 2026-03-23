@@ -196,8 +196,7 @@ Hand it to a customer. Drop it in a ticket. Open it on an airgapped analyst mach
 
 > 📸 **Screenshot:**
 
-<img width="1893" height="905" alt="image" src="https://github.com/user-attachments/assets/85ae3568-aac1-4c11-aa3d-2349b0d36f5c" />
-
+<img width="1431" height="853" alt="image" src="https://github.com/user-attachments/assets/e79b3929-8a69-41dc-8322-2f82ff779a1a" />
 
 ---
 

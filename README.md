@@ -68,14 +68,14 @@ psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
     -OutputDir "\\share\output"
 ```
 
-Output: `<hostname>_<timestamp>.zip` in the specified directory.
+Output: `TRG_<hostname>_<timestamp>.zip` in the specified directory.
 
 ---
 
 ## What you get in one run
 
 ```
-HOSTNAME_20260319_091103.zip
+TRG_HOSTNAME_20260319_091103.zip
 ├── triage_report.html              ← open this first
 ├── triage_metadata.json            ← collection summary, risk level
 ├── Processes\
@@ -172,7 +172,7 @@ Persistence\autoruns.csv         → entries outside known software vendors
 [+] Phase 17/17: Metadata & File Manifest
     [OK] Files collected: 84 | Total: 18.4 MB
     [OK] Highlights: CRITICAL=0 HIGH=2 MEDIUM=5 Total=7
-[OK] ZIP: HOST01_20260318_143022.zip (18.4 MB)
+[OK] ZIP: TRG_HOST01_20260318_143022.zip (18.4 MB)
 [OK] HTML report: triage_report.html
 ```
 
@@ -331,6 +331,7 @@ All three: PS 5.1, zero dependencies, self-contained HTML reports, PsExec-compat
 - `hashes.txt` / `hashes.csv` export for direct pipeline to `Invoke-MBHashCheck`
 - Firewall collection: `Action` column (Allow/Block), all enabled rules in both directions
 - UDP endpoints: `ProcessName` and `ProcessPath` columns added
+- Archive naming: `TRG_<hostname>_<timestamp>.zip`
 - Console output: `[OK]` green · `[WARN]` yellow · `[-]` gray
 - MITRE technique IDs on all highlight findings
 

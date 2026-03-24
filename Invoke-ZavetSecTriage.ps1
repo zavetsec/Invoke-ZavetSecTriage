@@ -773,37 +773,103 @@ foreach ($sp in @(
 }
 Save-Csv "$triageRoot\Persistence\autoruns.csv" $persistItems
 
-$tasks = Get-ScheduledTask -EA SilentlyContinue | ForEach-Object {
-    $t      = $_
-    $info   = Get-ScheduledTaskInfo -TaskName $t.TaskName -TaskPath $t.TaskPath -EA SilentlyContinue
-    $action = if ($t.Actions) {
-        ($t.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join ' | '
-    } else { '' }
+function ConvertTo-TaskObject {
+    param($t, [string]$Action, [string]$TaskPath, [string]$State, [string]$Author,
+          [string]$LastRunTime, [string]$NextRunTime)
     $isSusp  = $false
     $legitTP = @('\Microsoft\','\Google\','\Adobe\','\Mozilla\','\Kaspersky\','\UserGate\','\ESET\','\Windows\','\Intel\','\Zoom\','\Dropbox\')
     $inLegit = $false
-    foreach ($lp in $legitTP) { if ($t.TaskPath -like "$lp*") { $inLegit = $true; break } }
-    foreach ($pat in $suspCmdPatterns) { if ($action -match $pat) { $isSusp = $true; break } }
-    if (-not $inLegit -and $action -match '\\(Temp|Tmp|AppData|ProgramData\\Temp)\\') { $isSusp = $true }
+    foreach ($lp in $legitTP) { if ($TaskPath -like "$lp*") { $inLegit = $true; break } }
+    foreach ($pat in $suspCmdPatterns) { if ($Action -match $pat) { $isSusp = $true; break } }
+    if (-not $inLegit -and $Action -match '\\(Temp|Tmp|AppData|ProgramData\\Temp)\\') { $isSusp = $true }
     if ($isSusp) {
-        $actShort = if ($action.Length -gt 150) { $action.Substring(0,150) } else { $action }
-        Add-Highlight 'Persistence' 'HIGH' "Suspicious scheduled task: $($t.TaskName)" "Path=$($t.TaskPath) Action=$actShort" 'T1053.005'
+        $actShort = if ($Action.Length -gt 150) { $Action.Substring(0,150) } else { $Action }
+        $tname = if ($t -and $t.TaskName) { $t.TaskName } else { Split-Path $TaskPath -Leaf }
+        Add-Highlight 'Persistence' 'HIGH' "Suspicious scheduled task: $tname" "Path=$TaskPath Action=$actShort" 'T1053.005'
     }
     [PSCustomObject]@{
-        TaskName    = $t.TaskName
-        TaskPath    = $t.TaskPath
-        State       = $t.State
-        Author      = $t.Author
-        Action      = if ($action.Length -gt 300) { $action.Substring(0,300) } else { $action }
-        LastRunTime = if ($info) { $info.LastRunTime } else { '' }
-        NextRunTime = if ($info) { $info.NextRunTime } else { '' }
+        TaskName    = if ($t -and $t.TaskName) { $t.TaskName } else { Split-Path $TaskPath -Leaf }
+        TaskPath    = $TaskPath
+        State       = $State
+        Author      = $Author
+        Action      = if ($Action.Length -gt 300) { $Action.Substring(0,300) } else { $Action }
+        LastRunTime = $LastRunTime
+        NextRunTime = $NextRunTime
         Suspicious  = $isSusp
     }
 }
+
+# Primary: Get-ScheduledTask (ScheduledTasks module, PS 3.0+)
+$rawTasks = @(Get-ScheduledTask -EA SilentlyContinue)
+
+$tasks = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+if ($rawTasks.Count -gt 0) {
+    foreach ($t in $rawTasks) {
+        try {
+            $info     = Get-ScheduledTaskInfo -TaskName $t.TaskName -TaskPath $t.TaskPath -EA SilentlyContinue
+            $action   = if ($t.Actions) {
+                ($t.Actions | ForEach-Object {
+                    $exe = if ($_.Execute)   { $_.Execute }   else { '' }
+                    $arg = if ($_.Arguments) { $_.Arguments } else { '' }
+                    "$exe $arg".Trim()
+                }) -join ' | '
+            } else { '' }
+            $stateStr = try { [string]$t.State } catch { '' }
+            $author   = try { if ($t.Author) { [string]$t.Author } else { '' } } catch { '' }
+            $lastRun  = try { if ($info -and $info.LastRunTime) { $info.LastRunTime.ToString() } else { '' } } catch { '' }
+            $nextRun  = try { if ($info -and $info.NextRunTime) { $info.NextRunTime.ToString() } else { '' } } catch { '' }
+            $tasks.Add((ConvertTo-TaskObject $t $action $t.TaskPath $stateStr $author $lastRun $nextRun))
+        } catch {}
+    }
+} else {
+    # Fallback: COM Schedule.Service — works even when ScheduledTasks module is unavailable
+    Write-Warn "Get-ScheduledTask returned 0 results, trying COM fallback"
+    try {
+        $sched = New-Object -ComObject Schedule.Service -EA Stop
+        $sched.Connect()
+        $stack = [System.Collections.Stack]::new()
+        $stack.Push($sched.GetFolder('\'))
+        while ($stack.Count -gt 0) {
+            $folder = $stack.Pop()
+            foreach ($sub in @($folder.GetFolders(0))) { $stack.Push($sub) }
+            foreach ($task in @($folder.GetTasks(1))) {   # 1 = include hidden
+                try {
+                    $defXml  = [xml]$task.Xml
+                    $nsMgr   = New-Object System.Xml.XmlNamespaceManager($defXml.NameTable)
+                    $nsMgr.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
+                    $exec    = $defXml.SelectSingleNode('//t:Exec', $nsMgr)
+                    $exePath = if ($exec) { $exec.Command } else { '' }
+                    $args    = if ($exec) { $exec.Arguments } else { '' }
+                    $action  = "$exePath $args".Trim()
+                    $author  = try { $defXml.Task.RegistrationInfo.Author } catch { '' }
+                    $stateMap = @{ 0='Unknown'; 1='Disabled'; 2='Queued'; 3='Ready'; 4='Running' }
+                    $stateStr = if ($stateMap.ContainsKey($task.State)) { $stateMap[$task.State] } else { $task.State.ToString() }
+                    $lastRun  = try { $task.LastRunTime.ToString() } catch { '' }
+                    $nextRun  = try { $task.NextRunTime.ToString() } catch { '' }
+                    $tasks.Add((ConvertTo-TaskObject $null $action $task.Path $stateStr $author $lastRun $nextRun))
+                } catch {}
+            }
+        }
+    } catch {
+        Write-Warn "COM Schedule.Service fallback also failed: $_"
+    }
+}
+
+if ($tasks.Count -eq 0) {
+    Write-Warn "scheduled_tasks.csv: no tasks collected (0 results from both methods)"
+}
+
+$taskCsv = "$triageRoot\Persistence\scheduled_tasks.csv"
 try {
-    $taskCsv = "$triageRoot\Persistence\scheduled_tasks.csv"
-    $tasks | Export-Csv -Path $taskCsv -NoTypeInformation -Encoding ASCII -Force
-} catch { Save-Csv "$triageRoot\Persistence\scheduled_tasks.csv" $tasks }
+    if ($tasks.Count -gt 0) {
+        $tasks | Export-Csv -Path $taskCsv -NoTypeInformation -Encoding UTF8 -Force
+    } else {
+        # Write header-only CSV so the file is never 0 bytes
+        [PSCustomObject]@{TaskName='';TaskPath='';State='';Author='';Action='';LastRunTime='';NextRunTime='';Suspicious=''} |
+            Export-Csv -Path $taskCsv -NoTypeInformation -Encoding UTF8 -Force
+    }
+} catch { Save-Csv $taskCsv $tasks }
 
 $services = Get-WmiObject Win32_Service | ForEach-Object {
     $svc  = $_
@@ -2298,7 +2364,7 @@ try {
 Write-Phase 'Packaging ZIP'
 $global:PhaseCount-- # packaging is not a real phase in the 17-count
 
-$zipName = "${hostname}_${timestamp}.zip"
+$zipName = "TRG_${hostname}_${timestamp}.zip"
 $zipPath = Join-Path $OutputDir $zipName
 
 try {

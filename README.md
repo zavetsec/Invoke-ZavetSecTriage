@@ -2,7 +2,7 @@
 
 # Invoke-ZavetSecTriage
 
-**Live Windows forensics. Drop, run, ZIP. No setup. No install. No excuses.**
+**Live Windows forensics. No setup. No install. Just run.**
 
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
 [![Platform](https://img.shields.io/badge/Platform-Windows%208.1%2B-0078d4?logo=windows)](https://microsoft.com/windows)
@@ -10,12 +10,27 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](.)
 [![License](https://img.shields.io/badge/License-MIT-30d158)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.1-ff6b00)](CHANGELOG.md)
+[![Stars](https://img.shields.io/github/stars/zavetsec/Invoke-ZavetSecTriage?style=flat-square)](https://github.com/zavetsec/Invoke-ZavetSecTriage/stargazers)
 
 </div>
 
 ---
 
-> **TL;DR** — Drop the script on a Windows host, run as Administrator. **3–5 minutes. ~20 MB ZIP. One HTML report. One decision.** No setup. No internet. No dependencies. No persistent footprint.
+> **TL;DR** — Drop the script on a Windows host, run as Administrator. **3–5 minutes. ~20 MB ZIP. One HTML report. Fast initial decision.** No setup. No internet. No dependencies. No persistent footprint.
+>
+> *Designed for the first 5 minutes of an incident — not the full investigation.*
+
+---
+
+## About
+
+Built by a DFIR practitioner with hands-on experience across SOC operations, incident response, and threat hunting. Every design decision in this tool comes from real triage work on real hosts — not from a lab.
+
+The goal was simple: a single script that collects everything an analyst needs in the first five minutes of an incident, with zero preconditions. No agents. No servers. No prior setup. Just PowerShell, which is already on the machine.
+
+Tested across enterprise environments (domain-joined and workgroup), live IR engagements, and EDR-gap scenarios where no pre-deployed tooling was available.
+
+*Built for signal over noise in time-constrained investigations.*
 
 ---
 
@@ -45,8 +60,14 @@ That's what this tool is for.
 ## Quick start
 
 ```powershell
-# One-liner — download and run directly (run as Administrator)
-powershell -ep bypass -c "iwr https://raw.githubusercontent.com/zavetsec/Invoke-ZavetSecTriage/main/Invoke-ZavetSecTriage.ps1 -OutFile $env:TEMP\triage.ps1; & $env:TEMP\triage.ps1"
+# Download first, verify hash, then run — recommended in sensitive environments
+iwr https://raw.githubusercontent.com/zavetsec/Invoke-ZavetSecTriage/main/Invoke-ZavetSecTriage.ps1 `
+    -OutFile "$env:TEMP\triage.ps1"
+
+# Compare output with the published hash in CHECKSUMS.txt before proceeding
+Get-FileHash "$env:TEMP\triage.ps1" -Algorithm SHA256
+
+& "$env:TEMP\triage.ps1"
 ```
 
 ```powershell
@@ -61,6 +82,8 @@ psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
     -ExecutionPolicy Bypass -File "\\share\Invoke-ZavetSecTriage.ps1" `
     -OutputDir "\\share\output"
 ```
+
+> ⚠️ **Security note:** In regulated or high-sensitivity environments, download the script to an offline staging machine first, verify the SHA256 hash against `CHECKSUMS.txt`, then deploy from an internal share. Do not execute remote scripts directly in environments where living-off-the-land execution is monitored or restricted.
 
 Output: `TRG_<hostname>_<timestamp>.zip` in the specified directory.
 
@@ -122,7 +145,9 @@ TRG_HOSTNAME_20260319_091103.zip
 
 ## Real IR scenarios
 
-### Ransomware — patient zero triage
+<details>
+<summary><strong>Ransomware — patient zero triage</strong></summary>
+
 RDP access, 10 minutes before the cable gets pulled.
 
 ```
@@ -132,8 +157,10 @@ Network\tcp_connections.csv      → IsExternal + Established → C2 still activ
 Persistence\scheduled_tasks.csv  → dropper persistence before encryption?
 Logs\evtx_Security.csv           → EID 4688 process creation timeline
 ```
+</details>
 
-### Suspicious user / insider threat
+<details>
+<summary><strong>Suspicious user / insider threat</strong></summary>
 
 ```
 Users\kerberos_tickets.txt           → unusual service names, abnormal validity
@@ -141,8 +168,10 @@ Users\ps_history_<user>.txt          → net use / copy / xcopy to network paths
 Forensics\lnk_recent.csv             → recently opened files, share paths
 Forensics\browser_history_all.csv    → cloud upload, webmail, exfil sites
 ```
+</details>
 
-### Unknown initial access — alert fired, unclear source
+<details>
+<summary><strong>Unknown initial access — alert fired, unclear source</strong></summary>
 
 ```
 Forensics\triage_highlights.csv  → sort CRITICAL→HIGH, read top 10
@@ -150,6 +179,45 @@ Processes\processes.csv          → unsigned binaries in Temp / AppData
 Network\named_pipes.csv          → Suspicious = True → C2 framework pipe?
 Persistence\autoruns.csv         → entries outside known software vendors
 ```
+</details>
+
+---
+
+## Detection logic
+
+Understanding how findings are generated helps you calibrate what to trust and what to investigate further.
+
+### `Suspicious = True` on processes
+
+A process is flagged when one or more of the following apply:
+
+- Binary path is in a high-risk location: `%TEMP%`, `%APPDATA%`, `%PUBLIC%`, `C:\ProgramData`, `C:\Users\*\Downloads`
+- Binary is unsigned or signature validation fails
+- Process name matches a known attacker tool list (Mimikatz, Cobalt Strike loader names, common RAT names, recon utilities)
+- Parent/child relationship is anomalous (e.g. `Word.exe` → `powershell.exe`, `svchost.exe` spawning from unusual path)
+
+### Severity levels
+
+| Level | Assigned when |
+|---|---|
+| **CRITICAL** | Known malware name in Prefetch or process list, VSS empty (ransomware indicator), active C2 pipe pattern matched |
+| **HIGH** | Unsigned binary in high-risk path, external connection from non-browser process, suspicious scheduled task with encoded command |
+| **MEDIUM** | Autorun entry outside known software vendors, unusual named pipe, encoded PowerShell in history |
+| **LOW** | Informational findings — non-default firewall rules, ADS present, non-standard service recovery action |
+
+### Named pipe C2 detection
+
+Pipe names are matched against known patterns for Cobalt Strike (`postex_*`, `msagent_*`), Sliver, Havoc, and Brute Ratel. Pattern list is static — custom C2 profiles with renamed pipes will not be detected. See `$suspiciousPipes` in the script to extend.
+
+### False positives
+
+Detection is intentionally broad — the goal is triage signal, not precision. Expect noise from:
+
+- Security software (AV, EDR agents) running from non-standard paths
+- Developer tools (unsigned build artifacts, test binaries in `%TEMP%`)
+- IT management agents with encoded command-line arguments
+
+Every `Suspicious = True` entry is a lead to investigate, not a confirmed finding. The tool surfaces candidates — the analyst makes the call.
 
 ---
 
@@ -186,7 +254,7 @@ Self-contained `.html` — opens in any browser, no internet required.
 
 Hand it to a customer. Drop it in a ticket. Open it on an airgapped analyst machine.
 
-> 📸 **Screenshot:**
+> 📸 **Screenshot — overview and risk banner:**
 
 <img width="1431" height="853" alt="image" src="https://github.com/user-attachments/assets/e79b3929-8a69-41dc-8322-2f82ff779a1a" />
 
@@ -213,6 +281,21 @@ This script has no learning curve. It's PowerShell — built into every Windows 
 Use Velociraptor when you had time to pre-build a collector before the incident. Use KAPE when your binary kit is staged and you know the module layout by heart.
 
 **Use this when neither is staged, the clock is running, and PowerShell is all you have.**
+
+---
+
+## Remote execution via PsExec
+
+Running via PsExec is supported and tested, but be aware of what it leaves behind:
+
+| Artifact | Detail |
+|---|---|
+| **Windows Event Log** | EID 7045 (service install) on the target — PsExec registers a temporary service |
+| **Registry** | `HKLM\SYSTEM\CurrentControlSet\Services\PSEXESVC` — removed after session, but logged |
+| **Network share access** | SMB connection from your IP to `ADMIN$` is logged (EID 5140) |
+| **Script output** | Written to `-OutputDir` — ensure share permissions allow SYSTEM write access |
+
+If PsExec artifacts are a concern for your engagement, copy the script to the target manually and execute via WMI or a scheduled task instead.
 
 ---
 
@@ -254,6 +337,17 @@ Findings are automatically tagged and surfaced in `triage_highlights.csv` and th
 | Execution | T1059, T1059.001 |
 | C2 / Exfiltration | T1071, T1071.001 |
 | Remote Access | T1219 |
+
+**Example finding from `triage_highlights.csv`:**
+
+```
+Severity  : HIGH
+Technique : T1053.005
+Title     : Suspicious scheduled task — encoded command
+Detail    : Task "\Microsoft\Windows\UpdateCheck" runs powershell.exe -EncodedCommand <base64>
+            Author: WORKGROUP\SYSTEM | Path outside Windows\System32
+Remediation: Decode command, check creation time against breach window, remove if unauthorized
+```
 
 ---
 

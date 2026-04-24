@@ -10,7 +10,6 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](.)
 [![License](https://img.shields.io/badge/License-MIT-30d158)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.1-ff6b00)](CHANGELOG.md)
-[![Stars](https://img.shields.io/github/stars/zavetsec/Invoke-ZavetSecTriage?style=flat-square)](https://github.com/zavetsec/Invoke-ZavetSecTriage/stargazers)
 
 </div>
 

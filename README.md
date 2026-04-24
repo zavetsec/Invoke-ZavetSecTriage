@@ -1,11 +1,6 @@
 <div align="center">
 
-```
-     ____                  _    ____            
-    |_  /__ ___ _____ ___ | |_ / __/__ ___     
-     / // _` \ V / -_)  _||  _\__ \/ -_) _|    
-    /___\__,_|\_/\___\__| |_| |___/\___\__|    
-```
+# Invoke-ZavetSecTriage
 
 **Live Windows forensics. Drop, run, ZIP. No setup. No install. No excuses.**
 
@@ -15,7 +10,6 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](.)
 [![License](https://img.shields.io/badge/License-MIT-30d158)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.1-ff6b00)](CHANGELOG.md)
-[![Stars](https://img.shields.io/github/stars/zavetsec/Invoke-ZavetSecTriage?style=flat-square)](https://github.com/zavetsec/Invoke-ZavetSecTriage/stargazers)
 
 </div>
 
@@ -198,19 +192,27 @@ Hand it to a customer. Drop it in a ticket. Open it on an airgapped analyst mach
 
 ---
 
-## ⚡ When Velociraptor is too heavy
+## How it compares
 
-| | Invoke-ZavetSecTriage | KAPE | Velociraptor | CyberTriage |
-|---|---|---|---|---|
-| **External dependencies** | **None** | Collectors + targets | Agent + server | Agent + license |
-| **Offline operation** | ✅ | ✅ | ❌ | ❌ |
-| **Single-file deployment** | ✅ | ❌ | ❌ | ❌ |
-| **Live HTML report** | ✅ | ❌ | ✅ | ✅ |
-| **PsExec / SYSTEM-compatible** | ✅ | ⚠️ | ❌ | ❌ |
-| **Setup time** | **0 min** | 30+ min | Hours | Hours |
-| **Cost** | **Free** | Free | Free / Paid | Paid |
+Velociraptor and KAPE are both solid tools — widely used in professional IR engagements for good reason. Velociraptor has an offline collector mode that runs without a server and collects in a few minutes. KAPE is fast, scriptable, and battle-tested. Neither is a bad choice.
 
-Those tools are excellent — for prepared environments. This is what you run when neither is available.
+But both come with a hidden cost: **you need to know them before the incident hits.** Velociraptor's offline collector requires building a custom collection binary ahead of time — selecting artifacts, generating a config, compiling the executable via the server GUI or CLI. It's not complicated if you've done it before. If you haven't, you'll spend 30–60 minutes reading docs under pressure. KAPE has its own module and target ecosystem, sync logic, and output processing workflow that takes real time to get comfortable with. Both tools reward preparation. Neither forgives showing up cold.
+
+This script has no learning curve. It's PowerShell — built into every Windows machine since 2009. If you can open an elevated prompt, you can run a triage. There's nothing to pre-build, nothing to configure, no documentation to read mid-incident.
+
+| | Invoke-ZavetSecTriage | KAPE | Velociraptor Offline |
+|---|---|---|---|
+| **What you need on the target** | PowerShell 5.1 (built-in) | Collector binary + targets | Pre-built offline collector binary |
+| **Pre-configuration required** | None | Targets/modules selection | Build collector config on another machine first |
+| **Offline operation** | ✅ | ✅ | ✅ |
+| **Immediate HTML report** | ✅ | ❌ (post-process in KAPE GUI) | ❌ (process via server or Hunt Manager) |
+| **PsExec / SYSTEM-compatible** | ✅ | ⚠️ | ⚠️ |
+| **Time to first result** | 3–5 min | 10–25 min | 10–20 min |
+| **Cost** | Free | Free | Free / Enterprise paid |
+
+Use Velociraptor when you had time to pre-build a collector before the incident. Use KAPE when your binary kit is staged and you know the module layout by heart.
+
+**Use this when neither is staged, the clock is running, and PowerShell is all you have.**
 
 ---
 
@@ -238,8 +240,6 @@ if ($hits) {
 
 "Unknown host" → "confirmed malware family + C2 IPs" in ~8 minutes.
 
-> `Invoke-ZavetSecTriage` + `Invoke-MBHashCheck` = the **ZavetSec DFIR pipeline**. Both PS 5.1, zero-dep, dark HTML reports, PsExec-compatible. Built to work together.
-
 ---
 
 ## MITRE ATT&CK coverage
@@ -258,8 +258,6 @@ Findings are automatically tagged and surfaced in `triage_highlights.csv` and th
 ---
 
 ## When NOT to use this tool
-
-Being explicit about limitations is more useful than overpromising:
 
 - **Stealth assessments** — WMI queries + named pipe enumeration triggers behavioral EDR alerts. Not a covert tool.
 - **Full forensic preservation** — no memory images, no disk images. Use WinPmem / FTK Imager for that.
@@ -309,34 +307,15 @@ Modules that depend on features absent on older builds degrade silently — coll
 
 ---
 
-## Part of the ZavetSec DFIR toolkit
+## Part of the ZavetSec toolkit
 
-Designed to work together during live IR engagements. Each tool is independent — use any one standalone, or chain them as a pipeline.
+This script is part of a broader open-source SOC and DFIR toolkit built around one philosophy: **zero dependencies, zero setup, immediate output.**
 
-| Tool | What it does |
-|---|---|
-| **Invoke-ZavetSecTriage** | Live artifact collection — 18 modules, MITRE-tagged findings, HTML report |
-| **[Invoke-MBHashCheck](https://github.com/zavetsec/Invoke-MBHashCheck)** | Bulk hash triage — MalwareBazaar + ThreatFox C2 enrichment + GeoIP |
-| **[ZavetSecHardeningBaseline](https://github.com/zavetsec/ZavetSecHardeningBaseline)** | 60+ hardening checks — CIS/STIG aligned, JSON rollback, compliance report |
+Every tool in the toolkit runs on stock Windows infrastructure — PowerShell 5.1, no agents, no servers, no internet required. Each one produces a self-contained dark-themed HTML report you can open anywhere and hand to anyone. All tools are PS 5.1 compatible, PsExec/SYSTEM-friendly, and designed to work standalone or chain into a pipeline.
 
-All three: PS 5.1, zero dependencies, self-contained HTML reports, PsExec-compatible.
+The toolkit spans the full incident response and security operations workflow: live host triage and artifact collection, bulk threat intelligence enrichment, infrastructure hardening audits, network reconnaissance and asset discovery, lateral movement detection, and passive OSINT collection. Built for field use — not lab demos, not prepared environments.
 
----
-
-## Changelog
-
-### v1.1
-- Interactive HTML triage report — dark theme, tabbed views, MITRE links
-- Named pipe C2 pattern detection (Cobalt Strike, Sliver, Havoc, Brute Ratel)
-- `hashes.txt` / `hashes.csv` export for direct pipeline to `Invoke-MBHashCheck`
-- Firewall collection: `Action` column (Allow/Block), all enabled rules in both directions
-- UDP endpoints: `ProcessName` and `ProcessPath` columns added
-- Archive naming: `TRG_<hostname>_<timestamp>.zip`
-- Console output: `[OK]` green · `[WARN]` yellow · `[-]` gray
-- MITRE technique IDs on all highlight findings
-
-### v1.0
-- Initial release — 17 collection modules
+**[github.com/zavetsec](https://github.com/zavetsec)**
 
 ---
 

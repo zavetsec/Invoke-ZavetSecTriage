@@ -59,7 +59,7 @@ That's what this tool is for.
 ## Quick start
 
 ```powershell
-# Download first, verify hash, then run — recommended in sensitive environments
+# Download, verify hash, then run — recommended in sensitive environments
 iwr https://raw.githubusercontent.com/zavetsec/Invoke-ZavetSecTriage/main/Invoke-ZavetSecTriage.ps1 `
     -OutFile "$env:TEMP\triage.ps1"
 
@@ -86,7 +86,7 @@ psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
 
 Output: `TRG_<hostname>_<timestamp>.zip` in the specified directory.
 
-<img width="955" height="494" alt="image" src="https://github.com/user-attachments/assets/9768cd2e-62ea-48f3-8f7e-59a3fc7d6302" />
+<img width="955" height="494" alt="Console output" src="docs/images/console_output.png" />
 
 ---
 
@@ -124,6 +124,8 @@ TRG_HOSTNAME_20260319_091103.zip
 ```
 
 **18 collection modules. One pass. One ZIP.**
+
+A sanitized sample output is available in [`examples/triage_report_sample.html`](examples/triage_report_sample.html).
 
 ---
 
@@ -222,6 +224,22 @@ Every `Suspicious = True` entry is a lead to investigate, not a confirmed findin
 
 ---
 
+## Operational considerations
+
+Running this script generates observable telemetry. Know what you're leaving behind.
+
+| Source | What gets logged |
+|---|---|
+| **PowerShell ScriptBlock Logging** (EID 4103/4104) | Full script content logged if enabled — visible in SIEM and EDR |
+| **AMSI** | Script content is scanned by Windows Antimalware Scan Interface on execution |
+| **PowerShell Module Logging** (EID 4103) | Module-level activity logged if `LogPipelineExecutionDetails` is set |
+| **Process creation** (EID 4688) | `powershell.exe` with script path, command-line arguments |
+| **EDR behavioral telemetry** | WMI queries, named pipe enumeration, and hash computation may trigger behavioral alerts |
+
+This is not a covert tool. In environments with mature EDR or SIEM coverage, execution will be visible. That's expected — the intended use case is authorized IR, not red team operations.
+
+---
+
 ## Console output
 
 ```
@@ -257,7 +275,7 @@ Hand it to a customer. Drop it in a ticket. Open it on an airgapped analyst mach
 
 > 📸 **Screenshot — overview and risk banner:**
 
-<img width="1328" height="906" alt="image" src="https://github.com/user-attachments/assets/e33b54d8-e7b8-4f44-9e3a-366e8f2a03b6" />
+<img width="1328" height="906" alt="HTML report overview" src="docs/images/report_overview.png" />
 
 ---
 
@@ -359,6 +377,20 @@ Remediation: Decode command, check creation time against breach window, remove i
 - **Memory-resident threats** — reflective DLLs and process hollowing without on-disk artifacts are not directly detected.
 - **Fleet-scale triage** — one host at a time. For 100+ hosts simultaneously, use Velociraptor.
 - **Legal chain of custody** — first-pass triage, not forensically sound acquisition.
+
+---
+
+## Data sensitivity
+
+Collected artifacts may include credentials-adjacent data and personal information. Handle ZIPs accordingly.
+
+| Artifact | Sensitivity |
+|---|---|
+| `Users\kerberos_tickets.txt` | Contains active Kerberos TGT/TGS — treat as credential material |
+| `Users\ps_history_*.txt` | May contain plaintext passwords typed in the console |
+| `Forensics\browser_history_all.csv` | Full browsing history including authenticated sessions |
+| `Forensics\hashes.txt` | Reveals installed software — handle per engagement NDA |
+| Full ZIP | Treat as sensitive evidence — encrypt in transit, restrict access |
 
 ---
 

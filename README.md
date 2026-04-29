@@ -86,7 +86,7 @@ psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
 
 Output: `TRG_<hostname>_<timestamp>.zip` in the specified directory.
 
-<img width="955" height="494" alt="Console output" src="docs/images/console_output.png" />
+<img width="955" height="494" alt="image" src="https://github.com/user-attachments/assets/9768cd2e-62ea-48f3-8f7e-59a3fc7d6302" />
 
 ---
 
@@ -275,7 +275,7 @@ Hand it to a customer. Drop it in a ticket. Open it on an airgapped analyst mach
 
 > 📸 **Screenshot — overview and risk banner:**
 
-<img width="1328" height="906" alt="HTML report overview" src="docs/images/report_overview.png" />
+<img width="1328" height="906" alt="image" src="https://github.com/user-attachments/assets/e33b54d8-e7b8-4f44-9e3a-366e8f2a03b6" />
 
 ---
 

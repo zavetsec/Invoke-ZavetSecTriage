@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    ZavetSec Express Triage v1.3 - Zero-dependency DFIR for live Windows systems.
+    ZavetSec Express Triage v1.4 - Zero-dependency DFIR for live Windows systems.
 .DESCRIPTION
     Collects high-value forensic artifacts. No external tools required.
 
@@ -37,21 +37,32 @@
 
 .PARAMETER OutputDir
     Where to save the ZIP. Default = script directory.
+.PARAMETER Mode
+    LITE (skip raw EVTX copy) or FULL (default, copy all winevt logs).
+.PARAMETER SkipHashing
+    Skip SHA256 + Authenticode on process/service binaries for a fast snapshot.
+    Use when speed matters more than binary integrity verification.
 .EXAMPLE
     .\Invoke-ZavetSecTriage.ps1
     .\Invoke-ZavetSecTriage.ps1 -OutputDir C:\DFIR
+    .\Invoke-ZavetSecTriage.ps1 -SkipHashing        # fast snapshot, no hashing
 .NOTES
-    Version   : 1.3
+    Version   : 1.4
     Requires  : PowerShell 5.1+, local Administrator rights
     Encoding  : ASCII-safe (PS 5.1 compatible, no non-ASCII chars)
     External  : none required. sqlite3.exe optional for full browser parse.
+    Changelog : 1.4 - per-path hash/sig caching (major speedup on busy hosts),
+                      -SkipHashing switch, null-safe event Message extraction,
+                      SKIP_LARGE binaries now surfaced as highlights,
+                      HTML report long-cell tooltip + click-to-expand.
 #>
 
 [CmdletBinding()]
 param(
     [string]$OutputDir = $(if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }),
     [ValidateSet('LITE','FULL')]
-    [string]$Mode = 'FULL'
+    [string]$Mode = 'FULL',
+    [switch]$SkipHashing   # skip SHA256/Authenticode on process binaries for a fast snapshot
 )
 
 Set-StrictMode -Version Latest
@@ -396,11 +407,44 @@ Write-OK "OS=$($sysInfo.OS) | Build=$($sysInfo.OSBuild) | Uptime=$($sysInfo.Upti
 Write-Phase 'Running Processes'
 
 $wmiProcs = Get-WmiObject Win32_Process
+
+# Performance: dedupe expensive hash/signature work by executable path. A host can run
+# the same binary in dozens of processes (svchost.exe x50); without caching that means
+# 50 redundant SHA256 reads + 50 Authenticode/CRL lookups. We compute once per unique
+# path and reuse, which on a busy host (RDS/terminal server) cuts the process phase from
+# minutes to seconds. -SkipHashing bypasses it entirely for an instant snapshot.
+$hashCache = @{}   # path(lowercase) -> @{ Hash=...; Sig=... }
+$largeSkipped = [System.Collections.Generic.HashSet[string]]::new()
+
+function Get-PathHashSig {
+    param([string]$Path)
+    if ($SkipHashing) { return @{ Hash = 'SKIPPED'; Sig = 'SKIPPED' } }
+    $ck = $Path.ToLower()
+    if ($hashCache.ContainsKey($ck)) { return $hashCache[$ck] }
+    $h = Get-FileSHA256 $Path
+    $s = Get-FileSignature $Path
+    $entry = @{ Hash = $h; Sig = $s }
+    $hashCache[$ck] = $entry
+    return $entry
+}
+
 $procData = foreach ($p in ($wmiProcs | Sort-Object ProcessId)) {
     $path    = $p.ExecutablePath
     $cmdLine = if ($p.CommandLine) { $p.CommandLine } else { '' }
-    $hash    = if ($path -and (Test-Path $path -EA SilentlyContinue)) { Get-FileSHA256 $path } else { 'N/A' }
-    $sigSt   = if ($path -and (Test-Path $path -EA SilentlyContinue)) { Get-FileSignature $path } else { 'N/A' }
+    if ($path -and (Test-Path $path -EA SilentlyContinue)) {
+        $hs    = Get-PathHashSig $path
+        $hash  = $hs.Hash
+        $sigSt = $hs.Sig
+    } else {
+        $hash  = 'N/A'
+        $sigSt = 'N/A'
+    }
+
+    # A binary too large to hash leaves an unverifiable blind spot - surface it once per
+    # path so a swapped-out large executable doesn't slip through silently (point 4).
+    if ($hash -eq 'SKIP_LARGE' -and $largeSkipped.Add($path.ToLower())) {
+        Add-Highlight 'Processes' 'MEDIUM' "Binary too large to hash (unverified): $($p.Name)" "Path=$path - exceeds hash size cap, integrity not checked" 'T1036'
+    }
 
     $isSusp = $false; $suspReason = ''; $mitre = ''
 
@@ -967,7 +1011,9 @@ $services = Get-WmiObject Win32_Service | ForEach-Object {
     $svc  = $_
     $path = $svc.PathName
     $exe  = if ($path) { ($path -replace '"','') -split ' ' | Select-Object -First 1 } else { '' }
-    $hash = if ($exe -and (Test-Path $exe -EA SilentlyContinue)) { Get-FileSHA256 $exe } else { 'N/A' }
+    # Reuse the process-phase cache: most service binaries (svchost.exe, etc.) are already
+    # hashed. -SkipHashing is honored transparently via Get-PathHashSig.
+    $hash = if ($exe -and (Test-Path $exe -EA SilentlyContinue)) { (Get-PathHashSig $exe).Hash } else { 'N/A' }
     $isSusp = $false
     if ($path) {
         foreach ($d in $hiRiskDirs) { if ($path -like "$d*") { $isSusp = $true; break } }
@@ -1165,7 +1211,13 @@ foreach ($spec in $logSpecs) {
         $filter = @{ LogName=$spec.Name; Id=$spec.IDs; StartTime=$startTime }
         $evts   = Get-WinEvent -FilterHashtable $filter -MaxEvents $EventLogCount -EA Stop |
             Select-Object TimeCreated, Id, LevelDisplayName, ProviderName,
-                @{N='Message';E={ if ($_.Message.Length -gt 500) { $_.Message.Substring(0,500) } else { $_.Message } }}
+                @{N='Message';E={
+                    # $_.Message can be $null (event with no message template / missing
+                    # provider DLL). Under StrictMode .Length on $null throws and kills the
+                    # whole channel's pipeline, losing every event. Coerce to string first.
+                    $m = if ($null -eq $_.Message) { '' } else { [string]$_.Message }
+                    if ($m.Length -gt 500) { $m.Substring(0,500) } else { $m }
+                }}
         $safe   = $spec.Name -replace '[/\\]','-'
         Save-Csv "$triageRoot\Logs\evtx_$safe.csv" $evts
         $csvEventCount += $evts.Count
@@ -1927,7 +1979,7 @@ Save-Csv "$triageRoot\triage_manifest.csv" $manifest
 
 $meta = [ordered]@{
     TriageVersion  = '1.3'
-    Tool           = 'ZavetSec Express Triage v1.3'
+    Tool           = 'ZavetSec Express Triage v1.4'
     Hostname       = $hostname
     CollectionTime = $global:StartTime.ToString('yyyy-MM-dd HH:mm:ss')
     Duration       = $duration
@@ -2023,7 +2075,8 @@ function ConvertTo-HtmlTable {
     if (-not $Data) { return '<p class="empty">No data</p>' }
     $rows = @($Data)
     if ($rows.Count -eq 0) { return '<p class="empty">No data</p>' }
-    $truncated = $rows.Count -gt $MaxRows
+    $totalRows = $rows.Count                       # capture BEFORE capping (was reporting capped count)
+    $truncated = $totalRows -gt $MaxRows
     $rows = $rows | Select-Object -First $MaxRows
     $headers = $rows[0].PSObject.Properties.Name
     $sb = [System.Text.StringBuilder]::new()
@@ -2034,23 +2087,37 @@ function ConvertTo-HtmlTable {
     foreach ($row in $rows) {
         $null = $sb.Append('<tr>')
         foreach ($h in $headers) {
-            $val = $row.$h
-            $cell = if ($null -eq $val) { '' } else { [System.Web.HttpUtility]::HtmlEncode($val.ToString()) }
-            $cls = ''
-            if ($h -in @('Suspicious','KnownThreat') -and $val -eq $true) { $cls = ' class="bad"' }
+            $val  = $row.$h
+            $raw  = if ($null -eq $val) { '' } else { $val.ToString() }
+            $cell = if ($raw -eq '') { '' } else { [System.Web.HttpUtility]::HtmlEncode($raw) }
+
+            $classes = [System.Collections.Generic.List[string]]::new()
+            if ($h -in @('Suspicious','KnownThreat') -and $val -eq $true) { $classes.Add('bad') }
             if ($h -eq 'Severity') {
-                $cls = switch ($val) { 'CRITICAL'{' class="crit"'} 'HIGH'{' class="high"'} 'MEDIUM'{' class="med"'} default{''} }
+                switch ($val) { 'CRITICAL'{$classes.Add('crit')} 'HIGH'{$classes.Add('high')} 'MEDIUM'{$classes.Add('med')} }
             }
             if ($h -eq 'Action') {
-                $cls = switch ($val) { 'Block'{' class="bad"'} 'Allow'{' class="ok"'} default{''} }
+                switch ($val) { 'Block'{$classes.Add('bad')} 'Allow'{$classes.Add('ok')} }
             }
-            if ($h -eq 'IsExternal' -and $val -eq $true) { $cls = ' class="warn"' }
-            $null = $sb.Append("<td$cls>$cell</td>")
+            if ($h -eq 'IsExternal' -and $val -eq $true) { $classes.Add('warn') }
+
+            # Long cells get the full (HTML-encoded) value in a title attribute so the
+            # native tooltip shows complete data on hover, and class 'long' so a single
+            # click expands the cell inline (selectable/copyable). HtmlEncode also escapes
+            # double-quotes to &quot;, so reusing $cell inside title="..." is safe.
+            $titleAttr = ''
+            if ($raw.Length -gt 45) {
+                $classes.Add('long')
+                $titleAttr = " title=`"$cell`""
+            }
+
+            $clsAttr = if ($classes.Count -gt 0) { " class=`"$($classes -join ' ')`"" } else { '' }
+            $null = $sb.Append("<td$clsAttr$titleAttr>$cell</td>")
         }
         $null = $sb.Append('</tr>')
     }
     $null = $sb.Append('</tbody></table>')
-    if ($truncated) { $null = $sb.Append("<p class='trunc'>Showing first $MaxRows rows of $($rows.Count)+ records</p>") }
+    if ($truncated) { $null = $sb.Append("<p class='trunc'>Showing first $MaxRows of $totalRows records &mdash; full data in the CSV/JSON exports</p>") }
     $null = $sb.Append('</div>')
     return $sb.ToString()
 }
@@ -2488,6 +2555,8 @@ td {
   max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 tbody tr:hover td { background:rgba(0,255,136,.03); }
+td.long { cursor:pointer; }
+td.long.td-expanded { max-width:none; white-space:normal; word-break:break-all; overflow:visible; background:rgba(0,255,136,.05); }
 td.bad  { color:var(--red);    background:rgba(255,51,85,.08);  }
 td.crit { color:var(--red);    background:rgba(255,51,85,.08);  font-weight:600; }
 td.high { color:var(--orange); background:rgba(255,119,0,.08);  font-weight:600; }
@@ -2626,7 +2695,7 @@ td.warn { color:var(--yellow); }
       <div class="brand-icon">&#9670;</div>
       <div class="header-title">
         <h1>Triage Report</h1>
-        <div class="sub">ZavetSec Express Triage v1.3 <span class="dot"></span> DFIR <span class="dot"></span> Zero Dependencies</div>
+        <div class="sub">ZavetSec Express Triage v1.4 <span class="dot"></span> DFIR <span class="dot"></span> Zero Dependencies</div>
       </div>
     </div>
     <div class="risk-badge">$riskLevel</div>
@@ -2814,7 +2883,7 @@ $(($mitreList | ForEach-Object { "    <div class='mitre-tag'><a href='https://at
 </div><!-- /main -->
 
 <div class="footer">
-  <span><span class="footer-brand">&#9670; ZAVETSEC</span> &nbsp;&nbsp; Express Triage v1.3 &nbsp;|&nbsp; Host: $hostname &nbsp;|&nbsp; Collected: $htmlCollectionTime</span>
+  <span><span class="footer-brand">&#9670; ZAVETSEC</span> &nbsp;&nbsp; Express Triage v1.4 &nbsp;|&nbsp; Host: $hostname &nbsp;|&nbsp; Collected: $htmlCollectionTime</span>
   <span>Generated: $htmlNow &nbsp;|&nbsp; <a href="https://github.com/zavetsec/" target="_blank">github.com/zavetsec</a></span>
 </div>
 
@@ -2827,6 +2896,13 @@ function showTab(btn, id) {
   var pane = document.getElementById(id);
   if (pane) pane.classList.add('active');
 }
+
+// Click a truncated cell to expand it inline (full value is also in the native
+// hover tooltip via the title attribute). Click again to collapse.
+document.addEventListener('click', function(e){
+  var td = e.target.closest && e.target.closest('td.long');
+  if (td) td.classList.toggle('td-expanded');
+});
 </script>
 </body>
 </html>
@@ -2874,6 +2950,7 @@ Write-Host '    +---------------------------------------------------+' -Foregrou
 Write-Host ''
 Write-Host "    [>] Host      : $hostname"   -ForegroundColor Green
 Write-Host "    [>] Mode      : $Mode"       -ForegroundColor $(if($Mode -eq 'LITE'){'Cyan'}else{'Green'})
+Write-Host "    [>] Hashing   : $(if($SkipHashing){'SKIPPED'}else{"ON ($($hashCache.Count) unique binaries)"})" -ForegroundColor $(if($SkipHashing){'Yellow'}else{'Green'})
 Write-Host "    [>] Admin     : $isAdmin"    -ForegroundColor $(if($isAdmin){'Green'}else{'Red'})
 Write-Host "    [>] Duration  : $duration"   -ForegroundColor Green
 Write-Host "    [>] ZIP       : $zipPath"    -ForegroundColor Green

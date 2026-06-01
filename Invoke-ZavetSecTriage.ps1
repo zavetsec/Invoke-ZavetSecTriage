@@ -325,7 +325,7 @@ Write-Host '     / // _` \ V / -_)  _||  _\__ \/ -_) _|    ' -ForegroundColor Cy
 Write-Host '    /___\__,_|\_/\___\__| |_| |___/\___\__|    ' -ForegroundColor DarkCyan
 Write-Host ''
 Write-Host '    +--------------------------------------------+' -ForegroundColor DarkGray
-Write-Host '    |  E X P R E S S   T R I A G E   v 1 . 1   |' -ForegroundColor White
+Write-Host '    |  E X P R E S S   T R I A G E   v 1 . 4   |' -ForegroundColor White
 Write-Host '    |  DFIR  //  Zero Dependencies  //  PS 5.1  |' -ForegroundColor Gray
 Write-Host '    +--------------------------------------------+' -ForegroundColor DarkGray
 Write-Host ''
@@ -1978,7 +1978,7 @@ $manifestTotal = if ($manifest) {
 Save-Csv "$triageRoot\triage_manifest.csv" $manifest
 
 $meta = [ordered]@{
-    TriageVersion  = '1.3'
+    TriageVersion  = '1.4'
     Tool           = 'ZavetSec Express Triage v1.4'
     Hostname       = $hostname
     CollectionTime = $global:StartTime.ToString('yyyy-MM-dd HH:mm:ss')

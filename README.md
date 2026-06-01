@@ -9,7 +9,7 @@
 [![Requires](https://img.shields.io/badge/Requires-Administrator-critical)](.)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](.)
 [![License](https://img.shields.io/badge/License-MIT-30d158)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.1-ff6b00)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.4-ff6b00)](CHANGELOG.md)
 
 </div>
 
@@ -39,7 +39,7 @@ It's 2 AM. You get the call — host is acting weird, possible compromise. You n
 
 You don't have time to install agents. You can't push an EDR. The SIEM doesn't cover this box.
 
-Drop `Invoke-ZavetSecTriage.ps1`. Run as Admin. Walk away for 3 minutes. Come back to a ZIP with everything you need — running processes with hashes, network connections, autoruns, scheduled tasks, event logs, PowerShell history, browser history, loaded drivers, named pipes. Flagged by severity. Mapped to MITRE ATT&CK.
+Drop `Invoke-ZavetSecTriage.ps1`. Run as Admin. Walk away for 3 minutes. Come back to a ZIP with everything you need — running processes with hashes, network connections, autoruns, scheduled tasks, event logs, PowerShell history, browser history, prefetch execution evidence, named pipes. Flagged by severity. Mapped to MITRE ATT&CK.
 
 That's what this tool is for.
 
@@ -76,6 +76,12 @@ Get-FileHash "$env:TEMP\triage.ps1" -Algorithm SHA256
 # Specify output directory
 .\Invoke-ZavetSecTriage.ps1 -OutputDir C:\DFIR
 
+# Fast snapshot — skip SHA256 + Authenticode on binaries when speed beats integrity checks
+.\Invoke-ZavetSecTriage.ps1 -SkipHashing
+
+# LITE mode — skip raw EVTX copy for a smaller, faster archive
+.\Invoke-ZavetSecTriage.ps1 -Mode LITE
+
 # Remote via PsExec — runs as SYSTEM, no interaction required
 psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
     -ExecutionPolicy Bypass -File "\\share\Invoke-ZavetSecTriage.ps1" `
@@ -85,6 +91,14 @@ psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
 > ⚠️ **Security note:** In regulated or high-sensitivity environments, download the script to an offline staging machine first, verify the SHA256 hash against `CHECKSUMS.txt`, then deploy from an internal share. Do not execute remote scripts directly in environments where living-off-the-land execution is monitored or restricted.
 
 Output: `TRG_<hostname>_<timestamp>.zip` in the specified directory.
+
+### Command-line options
+
+| Parameter | Default | Description |
+|---|---|---|
+| `-OutputDir <path>` | script directory | Where to write the ZIP |
+| `-Mode <LITE\|FULL>` | `FULL` | `FULL` copies all raw `.evtx` logs; `LITE` skips them for a smaller, faster archive |
+| `-SkipHashing` | off | Skip SHA256 + Authenticode on process/service binaries for an instant snapshot when speed matters more than integrity verification |
 
 <img width="955" height="494" alt="image" src="https://github.com/user-attachments/assets/9768cd2e-62ea-48f3-8f7e-59a3fc7d6302" />
 
@@ -243,21 +257,20 @@ This is not a covert tool. In environments with mature EDR or SIEM coverage, exe
 ## Console output
 
 ```
-[+] Phase 1/17: Running Processes
-    [OK] 142 processes collected | Suspicious=3
-[+] Phase 2/17: Network Connections
-    [OK] TCP: 47 connections | External=12 | Suspicious=1
-[+] Phase 3/17: Named Pipes
-    [WARN] Suspicious pipe: \\.\pipe\mojo.5688.8052.183894939787788877
+  [*] [1/18] Running Processes
+  [+] 142 processes collected | Suspicious=3
+  [*] [3/18] Network State
+  [+] TCP: 47 connections | External=12 | Suspicious=1
+  [!] Suspicious pipe: \\.\pipe\mojo.5688.8052.183894939787788877
 ...
-[+] Phase 17/17: Metadata & File Manifest
-    [OK] Files collected: 84 | Total: 18.4 MB
-    [OK] Highlights: CRITICAL=0 HIGH=2 MEDIUM=5 Total=7
-[OK] ZIP: TRG_HOST01_20260318_143022.zip (18.4 MB)
-[OK] HTML report: triage_report.html
+  [*] [17/18] Metadata & File Manifest
+  [+] Files collected: 84 | Total: 18.4 MB
+  [+] Highlights: CRITICAL=0 HIGH=2 MEDIUM=5 Total=7
+  [+] ZIP: TRG_HOST01_20260318_143022.zip (18.4 MB)
+  [+] HTML report: triage_report.html
 ```
 
-`[OK]` green · `[WARN]` yellow · `[-]` gray.
+`[*]` phase header cyan · `[+]` ok green · `[!]` warn yellow · `[-]` info gray.
 
 ---
 
@@ -268,6 +281,7 @@ Self-contained `.html` — opens in any browser, no internet required.
 - **Risk banner** — CRITICAL / HIGH / MEDIUM / LOW based on finding count
 - **Findings table** — severity, MITRE technique ID, description, remediation hint
 - **Tabbed sections** per collection module — raw data on demand
+- **Full-value cells** — long entries (command lines, paths, hashes) show the complete value on hover and expand inline on click, so nothing is lost to truncation
 - **Recommended next steps** — investigation workflow built-in
 - **Timestamps, hostname, collector** — chain of custody basics in the footer
 
@@ -398,10 +412,11 @@ Collected artifacts may include credentials-adjacent data and personal informati
 
 | Metric | Typical value |
 |---|---|
-| Runtime | 3–5 minutes on a modern workstation |
+| Runtime | 3–5 minutes on a modern workstation (`-SkipHashing` cuts the process phase to seconds) |
 | Peak RAM | < 150 MB |
 | Archive size | 15–40 MB (no raw EVTX copy: 3–8 MB) |
 | Disk writes | One temp folder in `%TEMP%`, removed on completion |
+| Hashing | SHA256 + Authenticode computed once per unique binary path, then cached — no redundant work on hosts running the same image many times |
 | System calls | Read-only — no registry writes, no service install, no process injection |
 
 ---
@@ -448,7 +463,8 @@ The toolkit spans the full incident response and security operations workflow: l
 
 ## Roadmap
 
-- [ ] `LITE` mode — skip raw EVTX for faster, smaller output
+- [x] `LITE` mode — skip raw EVTX for faster, smaller output
+- [x] Per-path hash caching + `-SkipHashing` — faster process phase on busy hosts *(v1.4)*
 - [ ] Amcache / ShimCache module — additional execution evidence
 - [ ] MFT timeline sampling — recent file creations in high-risk directories
 - [ ] Expandable IOC lists — external config file for pipe patterns, attacker tools, domains

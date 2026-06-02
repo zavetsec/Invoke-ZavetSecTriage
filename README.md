@@ -1,327 +1,423 @@
 <div align="center">
 
-```
- ______               _    _____           
-|___  /              | |  / ____|          
-   / / __ ___   _____| |_| (___   ___  ___ 
-  / / / _` \ \ / / _ \ __|\___ \ / _ \/ __|
- / /_| (_| |\ V /  __/ |_ ____) |  __/ (__ 
-/_____\__,_| \_/ \___|\__|_____/ \___|\___|
-```
+# Invoke-ZavetSecTriage
 
-**Bulk hash triage — MalwareBazaar + ThreatFox + GeoIP**  
-*Dozens of hashes. Minutes. One HTML report. No SIEM. No install.*
+**Live Windows forensics. No setup. No install. Just run.**
 
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
-[![Platform](https://img.shields.io/badge/Platform-Windows-0078d4?logo=windows)](https://microsoft.com/windows)
-[![License](https://img.shields.io/badge/License-MIT-brightgreen)](LICENSE)
-[![MalwareBazaar](https://img.shields.io/badge/API-MalwareBazaar-orange)](https://bazaar.abuse.ch)
-[![ThreatFox](https://img.shields.io/badge/API-ThreatFox-red)](https://threatfox.abuse.ch)
-<!-- Uncomment after publishing the first GitHub Release:
-[![GitHub release](https://img.shields.io/github/v/release/zavetsec/Invoke-MBHashCheck)](https://github.com/zavetsec/Invoke-MBHashCheck/releases)
--->
+[![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
+[![Platform](https://img.shields.io/badge/Platform-Windows%208.1%2B-0078d4?logo=windows)](https://microsoft.com/windows)
+[![Requires](https://img.shields.io/badge/Requires-Administrator-critical)](.)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](.)
+[![License](https://img.shields.io/badge/License-MIT-30d158)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-1.4-ff6b00)](CHANGELOG.md)
 
 </div>
 
-# Invoke-MBHashCheck
-
-**Bulk malware hash triage for incident responders.** PowerShell tool to bulk-check MD5, SHA1 and SHA256 hashes against MalwareBazaar, enrich confirmed hits with ThreatFox IOC intelligence and GeoIP, and generate self-contained HTML reports.
-
 ---
 
-> **TL;DR** — Give it a list of hashes. It checks MalwareBazaar, enriches confirmed hits with ThreatFox C2 intel + GeoIP, and outputs a filterable, self-contained HTML report. Free API. No install. Runs on built-in PowerShell.
+> **TL;DR** — Drop the script on a Windows host, run as Administrator. **3–5 minutes. ~20 MB ZIP. One HTML report. Fast initial decision.** No setup. No internet. No dependencies. No persistent footprint.
 >
-> ```powershell
-> .\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt"
-> ```
+> *Designed for the first 5 minutes of an incident — not the full investigation.*
 
 ---
 
-## Contents
+## About
 
-- [Features](#features)
-- [Quick start](#quick-start)
-- [The problem](#the-problem)
-- [What it does](#what-it-does)
-- [Console output](#console-output)
-- [HTML report](#html-report)
-- [Why not just VirusTotal?](#why-not-just-virustotal)
-- [Usage](#usage)
-- [Parameters](#parameters)
-- [Hash file format](#hash-file-format)
-- [Understanding results](#understanding-results)
-- [Antivirus false positives](#antivirus-false-positives)
-- [Requirements](#requirements)
-- [ZavetSec DFIR toolkit](#part-of-the-zavetsec-dfir-toolkit)
-- [Roadmap](#roadmap)
-- [Changelog](#changelog)
+Built by a DFIR practitioner with hands-on experience across SOC operations, incident response, and threat hunting. Every design decision in this tool comes from real triage work on real hosts — not from a lab.
+
+The goal was simple: a single script that collects everything an analyst needs in the first five minutes of an incident, with zero preconditions. No agents. No servers. No prior setup. Just PowerShell, which is already on the machine.
+
+Tested across enterprise environments (domain-joined and workgroup), live IR engagements, and EDR-gap scenarios where no pre-deployed tooling was available.
+
+*Built for signal over noise in time-constrained investigations.*
 
 ---
 
-## Features
+## The situation
 
-- Bulk MD5 / SHA1 / SHA256 lookup against MalwareBazaar
-- ThreatFox IOC correlation on confirmed hits (C2 IPs / domains)
-- GeoIP enrichment for IP-type IOCs (country, city, ASN, Shodan link)
-- Self-contained dark-themed HTML report — opens offline, no server
-- Multiple inputs: file, inline array, directory scan, interactive prompt
-- Pipeline support (`-PassThru`) for CSV export and automation
-- Resilient: TLS 1.2, retries with backoff, graceful auth/network failure
-- Report-side HTML escaping of all API-derived fields
-- PowerShell 5.1+ compatible — zero dependencies, no install
+It's 2 AM. You get the call — host is acting weird, possible compromise. You need to know what's running, what's persisting, what's phoning home. **Right now.**
 
----
+You don't have time to install agents. You can't push an EDR. The SIEM doesn't cover this box.
 
-## The problem
+Drop `Invoke-ZavetSecTriage.ps1`. Run as Admin. Walk away for 3 minutes. Come back to a ZIP with everything you need — running processes with hashes, network connections, autoruns, scheduled tasks, event logs, PowerShell history, browser history, prefetch execution evidence, named pipes. Flagged by severity. Mapped to MITRE ATT&CK.
 
-You have a pile of suspicious file hashes from a compromised host. You need to know which ones are confirmed malware, what families they belong to, and whether any known C2 infrastructure is associated.
+That's what this tool is for.
 
-Manual approach:
-
-1. Open MalwareBazaar — paste hash — wait
-2. Open ThreatFox — paste hash — wait
-3. Look up the C2 IP geolocation — wait
-4. Take notes in a ticket
-5. Repeat for every remaining hash
-
-**With dozens of hashes this takes hours. This tool does it in minutes, automatically.**
+**Design priorities:** speed over completeness, breadth over depth, zero friction over configurability. The goal is signal in under 5 minutes on an unknown host — not a replacement for full forensic acquisition.
 
 ---
 
-## What it does
+## Who this is for
 
-```
-Hash list (file / directory scan / inline / interactive)
-            │
-            ▼
-    ┌─────────────────┐
-    │  MalwareBazaar  │  ──►  MALICIOUS  ──►   ┌──────────────────┐
-    │   get_info API  │                        │  ThreatFox       │
-    └─────────────────┘                        │  search_hash API │
-            │                                  └──────┬───────────┘
-            ├── NOT_FOUND                             │ C2 IPs / Domains
-            └── ERROR / AUTH_ERROR                    ▼
-                                              ┌──────────────────┐
-                                              │  ip-api.com      │
-                                              │  GeoIP (free)    │
-                                              └──────┬───────────┘
-                                                     │
-                                                     ▼
-                                        Self-contained HTML Report
-                                        + Console output
-```
-
-**Result:** one HTML file you can open, filter, search, and drop into a ticket.
+- **Incident responders** working live compromised hosts with no pre-deployed tooling
+- **Consultants** doing rapid onsite triage with no access to client infrastructure
+- **Blue teams** with EDR gaps — specific hosts not covered, agent not deployed, legacy systems
+- **SOC analysts** who need a shareable evidence package fast — one ZIP, one HTML, done
 
 ---
 
 ## Quick start
 
 ```powershell
-# 1. Get your free key at https://auth.abuse.ch (GitHub / Google / LinkedIn login)
+# Download, verify hash, then run — recommended in sensitive environments
+iwr https://raw.githubusercontent.com/zavetsec/Invoke-ZavetSecTriage/main/Invoke-ZavetSecTriage.ps1 `
+    -OutFile "$env:TEMP\triage.ps1"
 
-# 2. Run against your hash list
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt"
+# Compare output with the published hash in CHECKSUMS.txt before proceeding
+Get-FileHash "$env:TEMP\triage.ps1" -Algorithm SHA256
 
-# 3. Open the generated HTML report
+& "$env:TEMP\triage.ps1"
 ```
 
-Run it with no parameters and it goes interactive — it prompts for the Auth-Key, then offers to load a `.txt` file (paste or drag-and-drop the path) or to type hashes in by hand.
+```powershell
+# Run as Administrator — local collection
+.\Invoke-ZavetSecTriage.ps1
+
+# Specify output directory
+.\Invoke-ZavetSecTriage.ps1 -OutputDir C:\DFIR
+
+# Fast snapshot — skip SHA256 + Authenticode on binaries when speed beats integrity checks
+.\Invoke-ZavetSecTriage.ps1 -SkipHashing
+
+# LITE mode — skip raw EVTX copy for a smaller, faster archive
+.\Invoke-ZavetSecTriage.ps1 -Mode LITE
+
+# Remote via PsExec — runs as SYSTEM, no interaction required
+psexec \\TARGET -s -d powershell.exe -NonInteractive -WindowStyle Hidden `
+    -ExecutionPolicy Bypass -File "\\share\Invoke-ZavetSecTriage.ps1" `
+    -OutputDir "\\share\output"
+```
+
+> ⚠️ **Security note:** In regulated or high-sensitivity environments, download the script to an offline staging machine first, verify the SHA256 hash against `CHECKSUMS.txt`, then deploy from an internal share. Do not execute remote scripts directly in environments where living-off-the-land execution is monitored or restricted.
+
+Output: `TRG_<hostname>_<timestamp>.zip` in the specified directory.
+
+### Command-line options
+
+| Parameter | Default | Description |
+|---|---|---|
+| `-OutputDir <path>` | script directory | Where to write the ZIP |
+| `-Mode <LITE\|FULL>` | `FULL` | `FULL` copies all raw `.evtx` logs; `LITE` skips them for a smaller, faster archive |
+| `-SkipHashing` | off | Skip SHA256 + Authenticode on process/service binaries for an instant snapshot when speed matters more than integrity verification |
+
+<img width="955" height="494" alt="image" src="https://github.com/user-attachments/assets/9768cd2e-62ea-48f3-8f7e-59a3fc7d6302" />
+
+---
+
+## What you get in one run
+
+```
+TRG_HOSTNAME_20260319_091103.zip
+├── triage_report.html              ← open this first
+├── triage_metadata.json            ← collection summary, risk level
+├── Processes\
+│   └── processes.csv               ← SHA256, signature, Suspicious column
+├── Network\
+│   ├── tcp_connections.csv         ← IsExternal flag, ProcessPath
+│   ├── named_pipes.csv             ← OwnerPID + C2 pattern matches
+│   └── dns_cache.csv
+├── Persistence\
+│   ├── autoruns.csv                ← Run keys, Winlogon, IFEO, COM…
+│   ├── scheduled_tasks.csv
+│   └── services.csv
+├── Users\
+│   ├── kerberos_tickets.txt
+│   └── ps_history_<user>.txt
+├── Logs\
+│   ├── evtx_Security.csv
+│   └── *.evtx                      ← raw copies for Chainsaw / Hayabusa
+├── Forensics\
+│   ├── triage_highlights.csv       ← CRITICAL/HIGH/MEDIUM findings, MITRE-tagged
+│   ├── hashes.txt                  ← SHA256 list → pipe to Invoke-MBHashCheck
+│   ├── browser_history_all.csv
+│   ├── shadow_copies.csv
+│   └── prefetch.csv                ← attacker tool names flagged
+└── Config\
+    ├── firewall_rules_inbound.csv
+    └── ads_scan.csv
+```
+
+**18 collection modules. One pass. One ZIP.**
+
+A sanitized sample output is available in [`examples/triage_report_sample.html`](examples/triage_report_sample.html).
+
+---
+
+## Triage workflow — where to start
+
+```
+1. triage_report.html                  → open in browser, check risk banner
+2. Forensics\triage_highlights.csv     → sort Severity DESC — start at CRITICAL
+3. Processes\processes.csv             → filter Suspicious = True, check SHA256
+4. Forensics\hashes.txt                → bulk lookup: Invoke-MBHashCheck / VT / MISP
+5. Network\tcp_connections.csv         → filter IsExternal = True + State = Established
+6. Persistence\autoruns.csv            → unknown entries in Temp / AppData
+7. Persistence\scheduled_tasks.csv     → non-Microsoft task paths and authors
+8. Logs\ (Chainsaw or Hayabusa)        → Sigma rules against raw EVTX
+9. Forensics\shadow_copies.csv         → empty = ransomware VSS wipe (T1490)
+10. Forensics\prefetch.csv             → filter KnownThreat = True
+```
+
+---
+
+## Real IR scenarios
+
+<details>
+<summary><strong>Ransomware — patient zero triage</strong></summary>
+
+RDP access, 10 minutes before the cable gets pulled.
+
+```
+Forensics\shadow_copies.csv      → empty? vssadmin already ran (T1490)
+Forensics\prefetch.csv           → Rclone? Cobalt Strike loader?
+Network\tcp_connections.csv      → IsExternal + Established → C2 still active?
+Persistence\scheduled_tasks.csv  → dropper persistence before encryption?
+Logs\evtx_Security.csv           → EID 4688 process creation timeline
+```
+</details>
+
+<details>
+<summary><strong>Suspicious user / insider threat</strong></summary>
+
+```
+Users\kerberos_tickets.txt           → unusual service names, abnormal validity
+Users\ps_history_<user>.txt          → net use / copy / xcopy to network paths?
+Forensics\lnk_recent.csv             → recently opened files, share paths
+Forensics\browser_history_all.csv    → cloud upload, webmail, exfil sites
+```
+</details>
+
+<details>
+<summary><strong>Unknown initial access — alert fired, unclear source</strong></summary>
+
+```
+Forensics\triage_highlights.csv  → sort CRITICAL→HIGH, read top 10
+Processes\processes.csv          → unsigned binaries in Temp / AppData
+Network\named_pipes.csv          → Suspicious = True → C2 framework pipe?
+Persistence\autoruns.csv         → entries outside known software vendors
+```
+</details>
+
+---
+
+## Detection logic
+
+Understanding how findings are generated helps you calibrate what to trust and what to investigate further.
+
+### `Suspicious = True` on processes
+
+A process is flagged when one or more of the following apply:
+
+- Binary path is in a high-risk location: `%TEMP%`, `%APPDATA%`, `%PUBLIC%`, `C:\ProgramData`, `C:\Users\*\Downloads`
+- Binary is unsigned or signature validation fails
+- Process name matches a known attacker tool list (Mimikatz, Cobalt Strike loader names, common RAT names, recon utilities)
+- Parent/child relationship is anomalous (e.g. `Word.exe` → `powershell.exe`, `svchost.exe` spawning from unusual path)
+
+### Severity levels
+
+| Level | Assigned when |
+|---|---|
+| **CRITICAL** | Known malware name in Prefetch or process list, VSS empty (ransomware indicator), active C2 pipe pattern matched |
+| **HIGH** | Unsigned binary in high-risk path, external connection from non-browser process, suspicious scheduled task with encoded command |
+| **MEDIUM** | Autorun entry outside known software vendors, unusual named pipe, encoded PowerShell in history |
+| **LOW** | Informational findings — non-default firewall rules, ADS present, non-standard service recovery action |
+
+### Named pipe C2 detection
+
+Pipe names are matched against known patterns for Cobalt Strike (`postex_*`, `msagent_*`), Sliver, Havoc, and Brute Ratel. Pattern list is static — custom C2 profiles with renamed pipes will not be detected. See `$suspiciousPipes` in the script to extend.
+
+### False positives
+
+Detection is intentionally broad — the goal is triage signal, not precision. Expect noise from:
+
+- Security software (AV, EDR agents) running from non-standard paths
+- Developer tools (unsigned build artifacts, test binaries in `%TEMP%`)
+- IT management agents with encoded command-line arguments
+
+Every `Suspicious = True` entry is a lead to investigate, not a confirmed finding. The tool surfaces candidates — the analyst makes the call.
+
+---
+
+## Operational considerations
+
+Running this script generates observable telemetry. Know what you're leaving behind.
+
+| Source | What gets logged |
+|---|---|
+| **PowerShell ScriptBlock Logging** (EID 4103/4104) | Full script content logged if enabled — visible in SIEM and EDR |
+| **AMSI** | Script content is scanned by Windows Antimalware Scan Interface on execution |
+| **PowerShell Module Logging** (EID 4103) | Module-level activity logged if `LogPipelineExecutionDetails` is set |
+| **Process creation** (EID 4688) | `powershell.exe` with script path, command-line arguments |
+| **EDR behavioral telemetry** | WMI queries, named pipe enumeration, and hash computation may trigger behavioral alerts |
+
+This is not a covert tool. In environments with mature EDR or SIEM coverage, execution will be visible. That's expected — the intended use case is authorized IR, not red team operations.
 
 ---
 
 ## Console output
 
 ```
- ______               _    _____
-|___  /              | |  / ____|
-   / / __ ___   _____| |_| (___   ___  ___
-  / / / _` \ \ / / _ \ __|\___ \ / _ \/ __|
- / /_| (_| |\ V /  __/ |_ ____) |  __/ (__
-/_____\__,_| \_/ \___|\__|_____/ \___|\___|
-   ZavetSec - MalwareBazaar Hash Checker v2.1
-   MalwareBazaar + ThreatFox + GeoIP | Free key: auth.abuse.ch
-------------------------------------------------------
-
-[10:29:01] [HEAD] Loaded 5 hash(es) for analysis.
-[10:29:01] [INFO] Source: MalwareBazaar + ThreatFox (abuse.ch) | Auth-Key: ....e043
-
-  [1/5] 00f32286...93a730af (SHA256) ... [NOT_FOUND]  Not in MalwareBazaar database
-  [2/5] 0235838b...40d744be (SHA256) ... [NOT_FOUND]  Not in MalwareBazaar database
-  [3/5] 07bfae03...dfc6d5e4 (SHA256) ... [NOT_FOUND]  Not in MalwareBazaar database
-  [4/5] ed01ebfb...080e41aa (SHA256) ... [MALICIOUS]  WannaCry
-  [TF] Querying ThreatFox for related IOCs...
-      No IOCs found in ThreatFox
-  [5/5] 0a093c05...5f380a19 (SHA256) ... [NOT_FOUND]  Not in MalwareBazaar database
-
-------------------------------------------------------
-[10:29:05] [HEAD] Analysis complete.
-  Total:          5
-  MALICIOUS:      1
-  NOT IN DB:      4
-  Errors:         0
-  ThreatFox hits: 0
-  TF IOCs total:  0
-
-[10:29:05] [OK] HTML report saved: .\MB_HashReport_20260602_102905.html
+  [*] [1/18] Running Processes
+  [+] 142 processes collected | Suspicious=3
+  [*] [3/18] Network State
+  [+] TCP: 47 connections | External=12 | Suspicious=1
+  [!] Suspicious pipe: \\.\pipe\mojo.5688.8052.183894939787788877
+...
+  [*] [17/18] Metadata & File Manifest
+  [+] Files collected: 84 | Total: 18.4 MB
+  [+] Highlights: CRITICAL=0 HIGH=2 MEDIUM=5 Total=7
+  [+] ZIP: TRG_HOST01_20260318_143022.zip (18.4 MB)
+  [+] HTML report: triage_report.html
 ```
 
-> `-Quiet` suppresses NOT_FOUND rows in the console. `-PassThru` pipes result objects into further automation.
+`[*]` phase header cyan · `[+]` ok green · `[!]` warn yellow · `[-]` info gray.
 
 ---
 
-## HTML report
+## HTML triage report
 
-<img width="1919" height="938" alt="mbcheck" src="https://github.com/user-attachments/assets/9af3395a-ac05-4602-9c2a-9b4ae62d3306" />
+Self-contained `.html` — opens in any browser, no internet required.
 
-Self-contained `.html` — no server, no internet required to open. Dark terminal theme, UTF-8 (no BOM).
+- **Risk banner** — CRITICAL / HIGH / MEDIUM / LOW based on finding count
+- **Findings table** — severity, MITRE technique ID, description, remediation hint
+- **Tabbed sections** per collection module — raw data on demand
+- **Full-value cells** — long entries (command lines, paths, hashes) show the complete value on hover and expand inline on click, so nothing is lost to truncation
+- **Recommended next steps** — investigation workflow built-in
+- **Timestamps, hostname, collector** — chain of custody basics in the footer
 
-**Summary header:** Total · Malicious · Not in DB · Errors
+Hand it to a customer. Drop it in a ticket. Open it on an airgapped analyst machine.
 
-**Hash table columns:** Hash (clickable → MalwareBazaar sample page) · Verdict badge · File name / type / size · Signature · Tags · First seen · Intel (ClamAV detections + download/upload counts)
+> 📸 **Screenshot — overview and risk banner:**
 
-**ThreatFox section** *(shown only when hash-linked IOCs exist)*: IOC · Type · Threat · Malware family · Confidence % · Country flag + city · ASN · Shodan link for IPs
-
-**Filters:** All / Malicious / Not in DB  
-**Search:** instant full-text across all rows
-
-> All API-derived fields (file names, tags, signatures, ThreatFox values) are HTML-escaped before rendering, so a hostile sample name cannot inject markup into the report.
-
-Drop it in a ticket. Email it. Open it on an airgapped analyst machine.
+<img width="1328" height="906" alt="image" src="https://github.com/user-attachments/assets/e33b54d8-e7b8-4f44-9e3a-366e8f2a03b6" />
 
 ---
 
-## Why not just VirusTotal?
+## How it compares
 
-VirusTotal is excellent for deep single-file analysis. This tool solves a different problem: **bulk triage with C2 context during incident response.** It is designed for incident-response triage, not malware reverse engineering.
+Velociraptor and KAPE are both solid tools — widely used in professional IR engagements for good reason. Velociraptor has an offline collector mode that runs without a server and collects in a few minutes. KAPE is fast, scriptable, and battle-tested. Neither is a bad choice.
 
-| | MalwareBazaar GUI | VirusTotal GUI | **Invoke-MBHashCheck** |
+But both come with a hidden cost: **you need to know them before the incident hits.** Velociraptor's offline collector requires building a custom collection binary ahead of time — selecting artifacts, generating a config, compiling the executable via the server GUI or CLI. It's not complicated if you've done it before. If you haven't, you'll spend 30–60 minutes reading docs under pressure. KAPE has its own module and target ecosystem, sync logic, and output processing workflow that takes real time to get comfortable with. Both tools reward preparation. Neither forgives showing up cold.
+
+This script has no learning curve. It's PowerShell — built into every Windows machine since 2009. If you can open an elevated prompt, you can run a triage. There's nothing to pre-build, nothing to configure, no documentation to read mid-incident.
+
+| | Invoke-ZavetSecTriage | KAPE | Velociraptor Offline |
 |---|---|---|---|
-| **Bulk (dozens of hashes)** | Hours | Manual workflow | Minutes |
-| **Output format** | Browser notes | Browser notes | Filterable HTML |
-| **C2 enrichment** | No | No | Automatic (ThreatFox) |
-| **GeoIP on C2 IPs** | No | No | Yes |
-| **Automatable** | No | No | Yes (`-PassThru`) |
-| **Free** | Yes | Freemium | Yes |
-| **Offline report** | No | No | Yes |
+| **What you need on the target** | PowerShell 5.1 (built-in) | Collector binary + targets | Pre-built offline collector binary |
+| **Pre-configuration required** | None | Targets/modules selection | Build collector config on another machine first |
+| **Offline operation** | ✅ | ✅ | ✅ |
+| **Immediate HTML report** | ✅ | ❌ (post-process in KAPE GUI) | ❌ (process via server or Hunt Manager) |
+| **PsExec / SYSTEM-compatible** | ✅ | ⚠️ | ⚠️ |
+| **Time to first result** | 3–5 min | 10–25 min | 10–20 min |
+| **Cost** | Free | Free | Free / Enterprise paid |
+
+Use Velociraptor when you had time to pre-build a collector before the incident. Use KAPE when your binary kit is staged and you know the module layout by heart.
+
+**Use this when neither is staged, the clock is running, and PowerShell is all you have.**
 
 ---
 
-## Usage
+## Remote execution via PsExec
 
-```powershell
-# Bulk check from file
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt"
+Running via PsExec is supported and tested, but be aware of what it leaves behind:
 
-# Auto-hash all files in a directory
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -ScanDirectory "C:\Suspicious" -Recurse
-
-# Single / multiple hashes inline
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -Hashes "ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa"
-
-# Quiet mode — MALICIOUS / ERROR only in console
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt" -Quiet
-
-# Pipeline — export MALICIOUS hits to CSV
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt" -PassThru |
-    Where-Object Status -eq "MALICIOUS" |
-    Select-Object Hash, Signature, Tags, FirstSeen |
-    Export-Csv hits.csv -NoTypeInformation
-
-# Custom output folder + retry tuning
-.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt" `
-    -OutputDir "C:\Reports" -MaxRetries 5 -RetryDelaySeconds 10
-
-# Fully interactive (prompts for key, then file path or manual entry)
-.\Invoke-MBHashCheck.ps1
-```
-
----
-
-## Parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `-ApiKey` | String | prompted | MalwareBazaar / ThreatFox Auth-Key (free). Prompted if omitted. |
-| `-HashFile` | String | — | Path to a text file, one hash per line (`#` comments allowed) |
-| `-Hashes` | String[] | — | Hashes passed directly as an array |
-| `-ScanDirectory` | String | — | Directory to auto-hash (SHA256) before lookup |
-| `-Recurse` | Switch | off | Recurse into subdirectories with `-ScanDirectory` |
-| `-OutputDir` | String | current dir | Where to save the HTML report |
-| `-MaxRetries` | Int | 3 | Retry attempts on transient errors (HTTP 429 / 5xx / network) |
-| `-RetryDelaySeconds` | Int | 5 | Seconds between retries |
-| `-Quiet` | Switch | off | Show only MALICIOUS / ERROR in console |
-| `-PassThru` | Switch | off | Emit result objects to the pipeline |
-
----
-
-## Hash file format
-
-Plain text, one hash per line. Comments (`#`) and blank lines are ignored. MD5, SHA1, SHA256 — mix freely. Invalid lines are skipped with a warning. Duplicates are removed automatically.
-
-```text
-# Ransomware samples
-ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa
-
-# Stealers
-5dd92be22d005624d865ddf07402eb852426fc97baa52bbc58316690d41adb74
-
-# MD5 is fine too
-84c82835a5d21bbcf75a61706d8ab549
-```
-
----
-
-## Understanding results
-
-| Status | Meaning |
+| Artifact | Detail |
 |---|---|
-| `MALICIOUS` | Confirmed in MalwareBazaar — known malware |
-| `NOT_FOUND` | Not in MalwareBazaar — **does not mean clean** |
-| `ERROR` | API or network error after retries — see detail column |
-| `AUTH_ERROR` | Auth-Key rejected — the run stops, a report is still written |
+| **Windows Event Log** | EID 7045 (service install) on the target — PsExec registers a temporary service |
+| **Registry** | `HKLM\SYSTEM\CurrentControlSet\Services\PSEXESVC` — removed after session, but logged |
+| **Network share access** | SMB connection from your IP to `ADMIN$` is logged (EID 5140) |
+| **Script output** | Written to `-OutputDir` — ensure share permissions allow SYSTEM write access |
 
-> **NOT_FOUND ≠ Clean.** MalwareBazaar only indexes confirmed malware samples that have been submitted. A file absent from the database may still be malicious. Cross-reference with additional sources.
-
-**ThreatFox enrichment** fires on MALICIOUS hits when the hash was explicitly submitted to ThreatFox as an IOC by a researcher. In practice most hashes return "No IOCs found" — this is expected and correct. Hash-type IOCs are rare in ThreatFox; when present they provide C2 IPs/domains with confidence level and GeoIP. Note: ThreatFox expires IOCs older than 6 months, so older samples may not return results.
-
-**GeoIP** uses the free `ip-api.com` tier (45 requests/min). The tool paces requests to stay under that limit; if it is hit anyway, GeoIP is disabled for the rest of the run and a warning is logged — MalwareBazaar/ThreatFox data is unaffected.
+If PsExec artifacts are a concern for your engagement, copy the script to the target manually and execute via WMI or a scheduled task instead.
 
 ---
 
-## Antivirus false positives
+## DFIR pipeline — triage → hash check → verdict
 
-**Your AV may flag or quarantine this script. It is a false positive.** This is normal and expected for DFIR / blue-team tooling.
-
-Behavioural engines (Kaspersky, Defender, etc.) flag the script because — by design — it does the same *kinds* of things malware does: PowerShell making outbound API calls with a custom User-Agent, querying IP geolocation, recursively hashing files on disk (`-ScanDirectory`), and generating HTML with embedded data. The heuristic sees the *behaviour*, not the intent, and raises a generic verdict such as `HEUR:Trojan.Script.Generic` or `PDM:Trojan.Win32.Generic`. The script does nothing malicious — it reads hashes, calls public abuse.ch APIs, and writes a report.
-
-**How to confirm it really is a false positive:**
-
-- Check the exact verdict in your AV's quarantine log. `HEUR:`, `Generic`, `PDM:` prefixes indicate heuristic detection — almost always a false positive.
-- Upload the file to [VirusTotal](https://www.virustotal.com). A couple of heuristic hits out of 70+ engines = false positive. If many named engines agree on a specific malware family, stop and re-download a clean copy from this repo.
-- Verify integrity against the published hash (see below).
-
-**Add it to your AV exclusions:**
-
-*Kaspersky*
-1. Quarantine → restore the file.
-2. Settings → **Threats and Exclusions** → **Manage exclusions** → **Add**.
-3. Add the full path to `Invoke-MBHashCheck.ps1` (or the ZavetSec folder). Optionally add the verdict name to the trusted list.
-
-*Microsoft Defender*
 ```powershell
-Add-MpPreference -ExclusionPath "C:\Tools\ZavetSec\Invoke-MBHashCheck.ps1"
+# Step 1 — collect
+.\Invoke-ZavetSecTriage.ps1 -OutputDir "C:\IR\HOST01"
+
+# Step 2 — bulk hash check against MalwareBazaar + ThreatFox
+.\Invoke-MBHashCheck.ps1 `
+    -ApiKey "YOUR_KEY" `
+    -HashFile "C:\IR\HOST01\Forensics\hashes.txt" `
+    -Quiet -OutputDir "C:\IR\HOST01"
+
+# Step 3 — instant verdict
+$hits = .\Invoke-MBHashCheck.ps1 -ApiKey $key -HashFile "$out\Forensics\hashes.txt" -PassThru |
+    Where-Object Status -eq "MALICIOUS"
+
+if ($hits) {
+    Write-Host "COMPROMISE CONFIRMED: $($hits.Count) malicious process(es)" -ForegroundColor Red
+    $hits | Select-Object Hash, Signature, Tags, TFIOCs | Format-Table
+}
 ```
 
-**Optional — sign the script (recommended for distribution):**
-```powershell
-$cert = New-SelfSignedCertificate -Subject "CN=ZavetSec Code Signing" `
-    -Type CodeSigningCert -CertStoreLocation Cert:\CurrentUser\My
-Set-AuthenticodeSignature -FilePath .\Invoke-MBHashCheck.ps1 -Certificate $cert
-```
-Add the certificate to **Trusted Publishers**. This reduces prompts and also satisfies PowerShell's execution policy.
+"Unknown host" → "confirmed malware family + C2 IPs" in ~8 minutes.
 
-**Report the false positive** so it stops triggering for everyone: submit the file to [opentip.kaspersky.com](https://opentip.kaspersky.com) (or your vendor's FP submission form). Vendors typically clear generic verdicts within a few days.
+---
+
+## MITRE ATT&CK coverage
+
+Findings are automatically tagged and surfaced in `triage_highlights.csv` and the HTML report.
+
+| Tactic | Techniques |
+|---|---|
+| Persistence | T1053.005, T1547.001, T1547.004, T1547.005, T1546.003, T1546.010, T1546.012, T1546.015 |
+| Credential Access | T1003.001, T1552, T1558.001 |
+| Defense Evasion | T1036.001, T1036.005, T1197, T1490, T1562.001, T1562.004, T1564.004 |
+| Execution | T1059, T1059.001 |
+| C2 / Exfiltration | T1071, T1071.001 |
+| Remote Access | T1219 |
+
+**Example finding from `triage_highlights.csv`:**
+
+```
+Severity  : HIGH
+Technique : T1053.005
+Title     : Suspicious scheduled task — encoded command
+Detail    : Task "\Microsoft\Windows\UpdateCheck" runs powershell.exe -EncodedCommand <base64>
+            Author: WORKGROUP\SYSTEM | Path outside Windows\System32
+Remediation: Decode command, check creation time against breach window, remove if unauthorized
+```
+
+---
+
+## When NOT to use this tool
+
+- **Stealth assessments** — WMI queries + named pipe enumeration triggers behavioral EDR alerts. Not a covert tool.
+- **Full forensic preservation** — no memory images, no disk images. Use WinPmem / FTK Imager for that.
+- **Memory-resident threats** — reflective DLLs and process hollowing without on-disk artifacts are not directly detected.
+- **Fleet-scale triage** — one host at a time. For 100+ hosts simultaneously, use Velociraptor.
+- **Legal chain of custody** — first-pass triage, not forensically sound acquisition.
+
+---
+
+## Data sensitivity
+
+Collected artifacts may include credentials-adjacent data and personal information. Handle ZIPs accordingly.
+
+| Artifact | Sensitivity |
+|---|---|
+| `Users\kerberos_tickets.txt` | Contains active Kerberos TGT/TGS — treat as credential material |
+| `Users\ps_history_*.txt` | May contain plaintext passwords typed in the console |
+| `Forensics\browser_history_all.csv` | Full browsing history including authenticated sessions |
+| `Forensics\hashes.txt` | Reveals installed software — handle per engagement NDA |
+| Full ZIP | Treat as sensitive evidence — encrypt in transit, restrict access |
+
+---
+
+## Performance & footprint
+
+| Metric | Typical value |
+|---|---|
+| Runtime | 3–5 minutes on a modern workstation (`-SkipHashing` cuts the process phase to seconds) |
+| Peak RAM | < 150 MB |
+| Archive size | 15–40 MB (no raw EVTX copy: 3–8 MB) |
+| Disk writes | One temp folder in `%TEMP%`, removed on completion |
+| Hashing | SHA256 + Authenticode computed once per unique binary path, then cached — no redundant work on hosts running the same image many times |
+| System calls | Read-only — no registry writes, no service install, no process injection |
 
 ---
 
@@ -329,103 +425,74 @@ Add the certificate to **Trusted Publishers**. This reduces prompts and also sat
 
 | | |
 |---|---|
-| PowerShell | 5.1+ (built into Windows 10+); also runs on PowerShell 7 |
-| API key | Free at [auth.abuse.ch](https://auth.abuse.ch) — GitHub / Google / LinkedIn login |
-| Internet | `mb-api.abuse.ch`, `threatfox-api.abuse.ch`, `ip-api.com` |
-| TLS | TLS 1.2 forced at startup (for older Windows / PS 5.1) |
+| PowerShell | 5.1+ (built into Windows 8.1 / Server 2012 R2+) |
+| Privileges | Local Administrator |
+| Internet | Not required |
 | Install | None |
+| Optional | `sqlite3.exe` alongside script — enables full browser history with titles + timestamps |
 
 ---
 
-## Part of the ZavetSec DFIR toolkit
+## Tested environments
 
-Designed to work together during live IR engagements. Each tool is independent — use any one standalone, or chain them.
+| OS | Domain-joined | Workgroup |
+|---|---|---|
+| Windows 11 Pro 23H2 | ✅ | ✅ |
+| Windows 11 Pro 21H2 | ✅ | ✅ |
+| Windows 10 Pro 22H2 | ✅ | ✅ |
+| Windows 10 LTSC 2019 | ✅ | ✅ |
+| Windows Server 2022 (Core + Desktop) | ✅ | ✅ |
+| Windows Server 2019 | ✅ | ✅ |
+| Windows Server 2016 | ✅ | ✅ |
 
-| Tool | What it does |
-|---|---|
-| **Invoke-ZavetSecTriage** | Live artifact collection — MITRE-tagged findings, HTML report |
-| **Invoke-MBHashCheck** | Bulk hash triage — MalwareBazaar + ThreatFox C2 enrichment + GeoIP |
-| **ZavetSecHardeningBaseline** | Windows hardening checks — JSON rollback, compliance report |
+Modules that depend on features absent on older builds degrade silently — collection continues.
 
-All: PS 5.1, zero dependencies, self-contained HTML reports.
+---
 
-### Pipeline example — triage → verdict
+## Part of the ZavetSec toolkit
 
-```powershell
-$key = "YOUR_KEY"
-$out = "C:\IR\WORKSTATION-042"
+This script is part of a broader open-source SOC and DFIR toolkit built around one philosophy: **zero dependencies, zero setup, immediate output.**
 
-# 1. Collect running-process hashes from a suspect host
-.\Invoke-ZavetSecTriage.ps1 -OutputDir $out
+Every tool in the toolkit runs on stock Windows infrastructure — PowerShell 5.1, no agents, no servers, no internet required. Each one produces a self-contained dark-themed HTML report you can open anywhere and hand to anyone. All tools are PS 5.1 compatible, PsExec/SYSTEM-friendly, and designed to work standalone or chain into a pipeline.
 
-# 2. Check them, keep only confirmed malware
-$hits = .\Invoke-MBHashCheck.ps1 -ApiKey $key `
-    -HashFile "$out\Forensics\hashes.txt" -PassThru -Quiet |
-    Where-Object Status -eq "MALICIOUS"
+The toolkit spans the full incident response and security operations workflow: live host triage and artifact collection, bulk threat intelligence enrichment, infrastructure hardening audits, network reconnaissance and asset discovery, lateral movement detection, and passive OSINT collection. Built for field use — not lab demos, not prepared environments.
 
-if ($hits) {
-    Write-Host "COMPROMISE CONFIRMED: $($hits.Count) malicious process(es)" -ForegroundColor Red
-    $hits | Select-Object Hash, Signature, Tags | Format-Table
-} else {
-    Write-Host "No known malware in running processes" -ForegroundColor Green
-}
-```
+**[github.com/zavetsec](https://github.com/zavetsec)**
 
 ---
 
 ## Roadmap
 
-- [ ] VirusTotal fallback for NOT_FOUND hashes
-- [ ] JSON / CSV output alongside HTML
-- [ ] Local cache — skip re-querying known hashes
-- [ ] Sigma rule export from confirmed hits
-- [ ] MISP push integration
-
----
-
-## Changelog
-
-**v2.1**
-- HTML-escaping of all API-derived fields (report-side injection hardening)
-- ThreatFox JSON built via `ConvertTo-Json` (correct escaping); `</script>` neutralized
-- Graceful failure handling — bad key / network errors no longer abort the run; a report is always written
-- TLS 1.2 forced at startup; UTF-8 (no BOM) report output
-- ip-api rate-limit handling (paced + auto-disable on 429)
-- Interactive `.txt` file-path prompt; clean ASCII banner
-
-**v2.0**
-- ThreatFox IOC enrichment + GeoIP
-- `-ScanDirectory` / `-Recurse`, `-Quiet`, `-MaxRetries`, `-RetryDelaySeconds`, `-PassThru`
-
-**v1.0** — initial MalwareBazaar hash lookup + HTML report
+- [x] `LITE` mode — skip raw EVTX for faster, smaller output
+- [x] Per-path hash caching + `-SkipHashing` — faster process phase on busy hosts *(v1.4)*
+- [ ] Amcache / ShimCache module — additional execution evidence
+- [ ] MFT timeline sampling — recent file creations in high-risk directories
+- [ ] Expandable IOC lists — external config file for pipe patterns, attacker tools, domains
+- [ ] JSON-only output mode — for SIEM ingestion pipelines
 
 ---
 
 ## Contributing
 
-```bash
-git clone https://github.com/zavetsec/Invoke-MBHashCheck
-cd Invoke-MBHashCheck
+Most useful contributions:
+- **New attacker tool names** for Prefetch flagging (`$knownAttackerTools`)
+- **New C2 named pipe patterns** — Sliver, Havoc, Brute Ratel signatures
+- **Bug reports** on specific Windows versions or domain configurations
+- **False positives** — legitimate software triggering `Suspicious = True`
 
-# Lint before submitting
-Invoke-ScriptAnalyzer -Path .\Invoke-MBHashCheck.ps1 -Severity Warning,Error
-```
-
-Issues and feature requests → open an issue.
+Keep changes PS 5.1 compatible and zero-dependency. Open an issue or PR.
 
 ---
 
 ## License
 
-MIT — free to use, modify, distribute. Attribution appreciated.
+MIT — free to use, modify, distribute.
 
 ---
 
 <div align="center">
 
-**ZavetSec** · Powered by [abuse.ch](https://abuse.ch) (MalwareBazaar + ThreatFox)
-
-*Free API key: [auth.abuse.ch](https://auth.abuse.ch)*
+**[ZavetSec](https://github.com/zavetsec)** — built for field DFIR, not demos
 
 *⭐ Star the repo to help other responders find it.*
 

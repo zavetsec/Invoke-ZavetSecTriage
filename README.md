@@ -172,14 +172,7 @@ Run it with no parameters and it goes interactive — it prompts for the Auth-Ke
 
 ## HTML report
 
-<p align="center">
-  <img src="docs/report-preview.png" width="900" alt="ZavetSec MalwareBazaar HTML report preview">
-</p>
-<!-- Add once you capture a hash with live ThreatFox IOCs (the section is hidden when none exist):
-<p align="center">
-  <img src="docs/threatfox-preview.png" width="900" alt="ThreatFox IOC intelligence section with C2 and GeoIP">
-</p>
--->
+<img width="1919" height="938" alt="mbcheck" src="https://github.com/user-attachments/assets/9af3395a-ac05-4602-9c2a-9b4ae62d3306" />
 
 Self-contained `.html` — no server, no internet required to open. Dark terminal theme, UTF-8 (no BOM).
 
